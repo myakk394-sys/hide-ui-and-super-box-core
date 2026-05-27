@@ -1,0 +1,49 @@
+#!/usr/bin/env /bin/sh /etc/rc.common
+# Copyright (C) 2026 Hidekey
+
+START=99
+USE_PROCD=1
+
+# Read parameters from UCI (/etc/config/super-box)
+get_config() {
+	config_get_bool enabled "$1" enabled 0
+	config_get subscribe_url "$1" subscribe_url ""
+	config_get dns_server "$1" dns_server "8.8.8.8"
+	config_get local_port "$1" local_port "1080"
+}
+
+start_service() {
+	config_load super-box
+	config_foreach get_config main
+	
+	[ "$enabled" -eq 0 ] && return 0
+	[ -z "$subscribe_url" ] && {
+		logger -t super_box "Error: subscribe_url is empty in config!"
+		return 1
+	}
+
+	# Create tun interface if required
+	modprobe tun
+
+	# Initialize background daemon using procd system supervisor
+	procd_open_instance
+	procd_set_param command /usr/bin/super_box "$subscribe_url"
+	
+	# Set environment variables for the core
+	procd_set_param env RUST_LOG=info
+	procd_set_param env DNS_SERVER="$dns_server"
+	
+	# Autorespawn parameters (automatically restart service if it crashes)
+	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+	
+	# Redirect stdout/stderr directly into logread (system log)
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	
+	procd_close_instance
+	logger -t super_box "Hidekey Super Box Core started successfully."
+}
+
+stop_service() {
+	logger -t super_box "Stopping Hidekey Super Box Core..."
+}

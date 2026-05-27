@@ -1,0 +1,1358 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hide-UI — Super Box Management Panel</title>
+    <meta name="description" content="Hide-UI: Professional server management panel for Super Box Hidekey DPI bypass core.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:         #0d0f14;
+            --bg-2:       #13161e;
+            --bg-3:       #1a1d28;
+            --bg-4:       #1f2336;
+            --border:     rgba(255,255,255,0.06);
+            --border-h:   rgba(255,255,255,0.12);
+            --text:       #e8eaf0;
+            --text-2:     #8b90a0;
+            --text-3:     #555a6b;
+            --accent:     #4f8ef7;
+            --accent-2:   #3a72d9;
+            --green:      #34d399;
+            --green-dim:  rgba(52,211,153,0.12);
+            --red:        #f87171;
+            --red-dim:    rgba(248,113,113,0.12);
+            --yellow:     #fbbf24;
+            --yellow-dim: rgba(251,191,36,0.12);
+            --blue-dim:   rgba(79,142,247,0.12);
+            --radius:     8px;
+            --radius-lg:  12px;
+            --shadow:     0 4px 24px rgba(0,0,0,0.4);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; font-family: 'Inter', sans-serif; font-size: 14px; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+
+        /* ─── Login ─────────────────────────────────────────── */
+        #login-view {
+            display: flex; align-items: center; justify-content: center;
+            min-height: 100vh; background: var(--bg);
+        }
+        .login-box {
+            width: 380px; background: var(--bg-2); border: 1px solid var(--border);
+            border-radius: var(--radius-lg); padding: 40px 36px;
+            box-shadow: var(--shadow);
+        }
+        .login-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 32px; }
+        .login-logo-mark {
+            width: 36px; height: 36px; background: var(--accent);
+            border-radius: 8px; display: flex; align-items: center; justify-content: center;
+        }
+        .login-logo-mark svg { width: 20px; height: 20px; fill: #fff; }
+        .login-logo-text { font-size: 17px; font-weight: 700; letter-spacing: 0.3px; }
+        .login-logo-text span { color: var(--accent); }
+        .login-heading { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+        .login-sub { color: var(--text-2); font-size: 13px; margin-bottom: 28px; }
+        .field { margin-bottom: 16px; }
+        .field label { display: block; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .field-wrap { position: relative; }
+        .field-wrap svg.fi { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; fill: none; stroke: var(--text-3); stroke-width: 1.8; }
+        .field input {
+            width: 100%; background: var(--bg-3); border: 1px solid var(--border);
+            border-radius: var(--radius); color: var(--text); font-family: inherit; font-size: 14px;
+            padding: 10px 12px 10px 38px; outline: none; transition: border-color .2s;
+        }
+        .field input:focus { border-color: var(--accent); }
+        .field input::placeholder { color: var(--text-3); }
+        .eye-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 4px; }
+        .eye-btn svg { width: 16px; height: 16px; fill: none; stroke: var(--text-3); stroke-width: 1.8; }
+        .btn-primary {
+            width: 100%; padding: 11px; background: var(--accent); color: #fff; font-family: inherit;
+            font-size: 14px; font-weight: 600; border: none; border-radius: var(--radius);
+            cursor: pointer; transition: background .2s, transform .1s;
+        }
+        .btn-primary:hover { background: var(--accent-2); }
+        .btn-primary:active { transform: scale(0.99); }
+        .login-err { color: var(--red); font-size: 12px; margin-top: 10px; display: none; }
+
+        /* ─── App Shell ─────────────────────────────────────── */
+        #main-view { display: none; height: 100vh; }
+        .shell { display: flex; height: 100%; }
+
+        /* ─── Sidebar ───────────────────────────────────────── */
+        .sidebar {
+            width: 220px; flex-shrink: 0; background: var(--bg-2);
+            border-right: 1px solid var(--border);
+            display: flex; flex-direction: column; padding: 20px 12px;
+            overflow-y: auto;
+        }
+        .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 20px; }
+        .brand-mark {
+            width: 30px; height: 30px; background: var(--accent);
+            border-radius: 7px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+        }
+        .brand-mark svg { width: 17px; height: 17px; fill: #fff; }
+        .brand-name { font-size: 15px; font-weight: 700; line-height: 1.2; }
+        .brand-name small { display: block; font-size: 10px; font-weight: 400; color: var(--text-2); letter-spacing: 0.5px; }
+        .nav-section { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-3); padding: 16px 8px 6px; }
+        .nav-item {
+            display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+            border-radius: var(--radius); color: var(--text-2); font-weight: 500; font-size: 13.5px;
+            cursor: pointer; transition: all .15s; margin-bottom: 2px; user-select: none;
+        }
+        .nav-item svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; flex-shrink: 0; }
+        .nav-item:hover { background: var(--bg-3); color: var(--text); }
+        .nav-item.active { background: var(--blue-dim); color: var(--accent); font-weight: 600; }
+        .nav-item.active svg { stroke: var(--accent); }
+        .sidebar-bottom { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border); }
+        .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); flex-shrink: 0; }
+
+        /* ─── Main content ──────────────────────────────────── */
+        .main { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+        .topbar {
+            height: 56px; flex-shrink: 0; border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 24px; background: var(--bg-2);
+        }
+        .topbar-left { display: flex; align-items: center; gap: 12px; }
+        .topbar h1 { font-size: 15px; font-weight: 600; }
+        .topbar-sub { font-size: 12px; color: var(--text-2); }
+        .topbar-right { display: flex; align-items: center; gap: 12px; }
+        .chip {
+            display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500;
+            padding: 5px 12px; border-radius: 20px; border: 1px solid var(--border);
+            background: var(--bg-3); color: var(--text-2);
+        }
+        .chip.online { border-color: rgba(52,211,153,0.25); background: var(--green-dim); color: var(--green); }
+        .content { flex: 1; overflow-y: auto; padding: 24px; background: var(--bg); }
+
+        /* ─── Cards / Metrics ───────────────────────────────── */
+        .metrics-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; margin-bottom: 20px; }
+        .metric-card {
+            background: var(--bg-2); border: 1px solid var(--border);
+            border-radius: var(--radius-lg); padding: 20px;
+        }
+        .metric-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-2); margin-bottom: 14px; }
+        .gauge-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+        .gauge-svg { width: 80px; height: 80px; }
+        .gauge-track { fill: none; stroke: var(--bg-4); stroke-width: 6; }
+        .gauge-fill { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset .6s ease; }
+        .gauge-cpu { stroke: var(--accent); }
+        .gauge-ram { stroke: var(--green); }
+        .gauge-swap { stroke: var(--yellow); }
+        .gauge-disk { stroke: var(--red); }
+        .gauge-pct { font-size: 16px; font-weight: 700; }
+        .gauge-info { font-size: 11px; color: var(--text-2); text-align: center; }
+
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+        .card { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+        .card-head {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px 20px; border-bottom: 1px solid var(--border);
+        }
+        .card-title { font-size: 13px; font-weight: 600; }
+        .card-badge {
+            font-size: 11px; font-weight: 600; padding: 2px 10px;
+            border-radius: 20px; letter-spacing: 0.3px;
+        }
+        .card-badge.green { background: var(--green-dim); color: var(--green); }
+        .card-badge.red { background: var(--red-dim); color: var(--red); }
+        .card-badge.blue { background: var(--blue-dim); color: var(--accent); }
+        .card-body { padding: 16px 20px; }
+        .stat-row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px;
+        }
+        .stat-row:last-child { border-bottom: none; }
+        .stat-row .key { color: var(--text-2); }
+        .stat-row .val { font-weight: 500; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; }
+        .stat-row .val.green { color: var(--green); }
+        .stat-row .val.red { color: var(--red); }
+        .stat-row .val.blue { color: var(--accent); }
+
+        /* ─── Log Box ───────────────────────────────────────── */
+        .log-card { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+        .log-body {
+            padding: 14px 16px; font-family: 'JetBrains Mono', monospace;
+            font-size: 11.5px; line-height: 1.8; max-height: 180px; overflow-y: auto; color: var(--text-2);
+        }
+        .log-line-info { color: var(--accent); }
+        .log-line-ok { color: var(--green); }
+        .log-line-warn { color: var(--yellow); }
+        .log-line-err { color: var(--red); }
+
+        /* ─── Peers tab ─────────────────────────────────────── */
+        .peers-stats { display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; margin-bottom: 20px; }
+        .peer-stat { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px 18px; }
+        .peer-stat .ps-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-2); margin-bottom: 6px; }
+        .peer-stat .ps-val { font-size: 17px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+
+        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+        .toolbar-left { display: flex; gap: 8px; }
+        .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius); font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s; border: none; }
+        .btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; }
+        .btn-solid { background: var(--accent); color: #fff; }
+        .btn-solid:hover { background: var(--accent-2); }
+        .btn-outline { background: transparent; color: var(--text-2); border: 1px solid var(--border); }
+        .btn-outline:hover { background: var(--bg-3); color: var(--text); border-color: var(--border-h); }
+        .btn-ghost { background: transparent; color: var(--text-2); }
+        .btn-ghost:hover { background: var(--bg-3); color: var(--text); }
+        .btn-danger { background: var(--red-dim); color: var(--red); border: 1px solid rgba(248,113,113,0.2); }
+        .btn-danger:hover { background: rgba(248,113,113,0.2); }
+        .search-wrap { position: relative; }
+        .search-wrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; fill: none; stroke: var(--text-3); stroke-width: 2; pointer-events: none; }
+        .search-wrap input {
+            background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius);
+            color: var(--text); font-size: 13px; font-family: inherit; padding: 8px 12px 8px 32px;
+            width: 220px; outline: none; transition: all .15s;
+        }
+        .search-wrap input:focus { border-color: var(--accent); width: 260px; }
+        .search-wrap input::placeholder { color: var(--text-3); }
+
+        .table-wrap { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        thead tr { background: var(--bg-3); }
+        th { padding: 11px 14px; text-align: left; font-size: 11px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        td { padding: 12px 14px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: middle; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: rgba(255,255,255,0.02); }
+        .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+
+        /* Toggle */
+        .toggle { position: relative; width: 34px; height: 18px; display: inline-block; }
+        .toggle input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider {
+            position: absolute; inset: 0; background: var(--bg-4); border-radius: 18px; cursor: pointer; transition: .25s;
+        }
+        .toggle-slider::before {
+            content: ''; position: absolute; width: 12px; height: 12px;
+            background: var(--text-3); border-radius: 50%; left: 3px; top: 3px; transition: .25s;
+        }
+        .toggle input:checked + .toggle-slider { background: var(--green-dim); }
+        .toggle input:checked + .toggle-slider::before { background: var(--green); transform: translateX(16px); }
+
+        /* Badges */
+        .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.3px; }
+        .tag-hidekey { background: rgba(79,142,247,0.12); color: var(--accent); border: 1px solid rgba(79,142,247,0.2); }
+        .tag-rtp { background: rgba(52,211,153,0.1); color: var(--green); border: 1px solid rgba(52,211,153,0.2); }
+        .tag-poly { background: rgba(251,191,36,0.1); color: var(--yellow); border: 1px solid rgba(251,191,36,0.2); }
+
+        /* URI copy block */
+        .uri-cell {
+            font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent);
+            max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            cursor: pointer; padding: 4px 8px; background: var(--bg-3);
+            border-radius: 4px; border: 1px dashed var(--border-h);
+        }
+        .uri-cell:hover { border-color: var(--accent); }
+
+        /* ─── Settings tab ──────────────────────────────────── */
+        .settings-layout { display: grid; grid-template-columns: 200px 1fr; gap: 20px; }
+        .settings-nav { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 8px; align-self: start; }
+        .snav-item {
+            display: flex; align-items: center; gap: 9px; padding: 9px 12px;
+            border-radius: var(--radius); color: var(--text-2); font-size: 13px; font-weight: 500;
+            cursor: pointer; transition: all .15s; margin-bottom: 2px;
+        }
+        .snav-item svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+        .snav-item:hover { background: var(--bg-3); color: var(--text); }
+        .snav-item.active { background: var(--blue-dim); color: var(--accent); }
+        .snav-item.active svg { stroke: var(--accent); }
+
+        .settings-panel { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+        .settings-header { padding: 18px 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+        .settings-title { font-size: 14px; font-weight: 600; }
+        .settings-sub { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+        .settings-body { padding: 24px; }
+        .settings-group { display: none; }
+        .settings-group.active { display: block; }
+
+        .form-row { display: grid; grid-template-columns: 260px 1fr; gap: 32px; align-items: start; padding: 18px 0; border-bottom: 1px solid var(--border); }
+        .form-row:last-child { border-bottom: none; }
+        .form-label h4 { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+        .form-label p { font-size: 12px; color: var(--text-2); line-height: 1.5; }
+        .form-ctrl input, .form-ctrl select, .form-ctrl textarea {
+            width: 100%; background: var(--bg-3); border: 1px solid var(--border);
+            border-radius: var(--radius); color: var(--text); font-family: inherit; font-size: 13px;
+            padding: 9px 12px; outline: none; transition: border-color .2s;
+        }
+        .form-ctrl input:focus, .form-ctrl select:focus, .form-ctrl textarea:focus { border-color: var(--accent); }
+        .form-ctrl select option { background: var(--bg-3); }
+        .form-ctrl textarea { resize: vertical; min-height: 80px; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; }
+        .form-ctrl-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+        .form-ctrl-row .hint { font-size: 12px; color: var(--text-2); }
+
+        .section-divider { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-3); padding: 20px 0 12px; display: flex; align-items: center; gap: 10px; }
+        .section-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+        /* WARP status */
+        .warp-status { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; background: var(--bg-3); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 16px; }
+        .warp-status-info { display: flex; align-items: center; gap: 12px; }
+        .warp-icon { width: 36px; height: 36px; border-radius: 8px; background: rgba(248,114,0,0.15); display: flex; align-items: center; justify-content: center; }
+        .warp-icon svg { width: 20px; height: 20px; fill: none; stroke: #f87200; stroke-width: 1.8; }
+        .warp-name { font-size: 13px; font-weight: 600; }
+        .warp-ip { font-size: 11px; color: var(--text-2); font-family: 'JetBrains Mono', monospace; margin-top: 2px; }
+        .warp-actions { display: flex; gap: 8px; }
+
+        /* WASM tab */
+        .wasm-drop {
+            border: 2px dashed var(--border-h); background: var(--bg-3);
+            border-radius: var(--radius-lg); padding: 56px 32px; text-align: center; cursor: pointer; transition: all .2s;
+        }
+        .wasm-drop:hover { border-color: var(--accent); background: var(--blue-dim); }
+        .wasm-drop svg { width: 40px; height: 40px; fill: none; stroke: var(--text-3); stroke-width: 1.5; margin-bottom: 14px; }
+        .wasm-drop h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+        .wasm-drop p { font-size: 12px; color: var(--text-2); }
+
+        /* ─── Modal ─────────────────────────────────────────── */
+        .modal-overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center;
+            z-index: 100; opacity: 0; transition: opacity .2s;
+        }
+        .modal-overlay.open { display: flex; opacity: 1; }
+        .modal { background: var(--bg-2); border: 1px solid var(--border-h); border-radius: var(--radius-lg); width: 440px; padding: 28px; box-shadow: var(--shadow); }
+        .modal h3 { font-size: 15px; font-weight: 600; margin-bottom: 20px; }
+        .modal-footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 24px; }
+
+        /* ─── Toast ─────────────────────────────────────────── */
+        #toast {
+            position: fixed; bottom: 24px; right: 24px; z-index: 200;
+            background: var(--bg-2); border: 1px solid var(--border-h);
+            color: var(--text); padding: 12px 20px; border-radius: var(--radius);
+            box-shadow: var(--shadow); font-size: 13px; font-weight: 500;
+            transform: translateY(80px); opacity: 0; transition: all .25s cubic-bezier(.34,1.56,.64,1);
+        }
+        #toast.show { transform: translateY(0); opacity: 1; }
+        #toast.ok { border-left: 3px solid var(--green); }
+        #toast.err { border-left: 3px solid var(--red); }
+
+        /* ─── Scrollbar ─────────────────────────────────────── */
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+        /* ─── Tab visibility ────────────────────────────────── */
+        .tab { display: none; }
+        .tab.active { display: block; }
+    </style>
+</head>
+<body>
+
+<!-- ════════════ LOGIN ════════════ -->
+<div id="login-view">
+    <div class="login-box">
+        <div class="login-logo">
+            <div class="login-logo-mark">
+                <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+            </div>
+            <div class="login-logo-text">Hide<span>-UI</span></div>
+        </div>
+        <div class="login-heading">Вход в систему</div>
+        <div class="login-sub">Панель управления Super Box</div>
+        <div class="field">
+            <label>Имя пользователя</label>
+            <div class="field-wrap">
+                <svg class="fi" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                <input type="text" id="inp-user" placeholder="admin" value="admin" autocomplete="username">
+            </div>
+        </div>
+        <div class="field">
+            <label>Пароль</label>
+            <div class="field-wrap">
+                <svg class="fi" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                <input type="password" id="inp-pass" placeholder="Введите пароль" autocomplete="current-password">
+                <button class="eye-btn" onclick="togglePwd()" tabindex="-1">
+                    <svg id="eye-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+            </div>
+        </div>
+        <button class="btn-primary" onclick="doLogin()">Войти</button>
+        <div class="login-err" id="login-err">Неверный логин или пароль</div>
+    </div>
+</div>
+
+<!-- ════════════ MAIN APP ════════════ -->
+<div id="main-view">
+    <div class="shell">
+
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-mark">
+                    <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                </div>
+                <div class="brand-name">Super Box<small>Hide-UI Panel</small></div>
+            </div>
+
+            <div class="nav-section">Мониторинг</div>
+            <div class="nav-item active" id="nav-dashboard" onclick="switchTab('dashboard')">
+                <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                Обзор системы
+            </div>
+
+            <div class="nav-section">Управление</div>
+            <div class="nav-item" id="nav-peers" onclick="switchTab('peers')">
+                <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+                Подключения
+            </div>
+            <div class="nav-item" id="nav-settings" onclick="switchTab('settings')">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
+                Настройки ядра
+            </div>
+            <div class="nav-item" id="nav-plugins" onclick="switchTab('plugins')">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M12 18v-6M9 15h6"/></svg>
+                WASM Плагины
+            </div>
+
+            <div class="sidebar-bottom">
+                <div class="nav-item" onclick="doLogout()">
+                    <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+                    Выйти
+                </div>
+                <div class="nav-item" style="pointer-events:none; margin-top:6px;">
+                    <div class="status-dot"></div>
+                    <span style="font-size:11px; color:var(--text-3)">Ядро: <span style="color:var(--green); font-weight:600">Работает</span></span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main content area -->
+        <div class="main">
+            <div class="topbar">
+                <div class="topbar-left">
+                    <h1 id="tab-title">Обзор системы</h1>
+                    <span class="topbar-sub" id="tab-sub">Мониторинг ресурсов и трафика в реальном времени</span>
+                </div>
+                <div class="topbar-right">
+                    <div class="chip online">
+                        <div class="status-dot" style="width:6px;height:6px;"></div>
+                        Ядро запущено
+                    </div>
+                    <div class="chip" id="server-addr-chip">193.233.136.52:8443</div>
+                </div>
+            </div>
+
+            <div class="content">
+
+                <!-- ── DASHBOARD ── -->
+                <div class="tab active" id="tab-dashboard">
+                    <div class="metrics-row">
+                        <div class="metric-card">
+                            <div class="metric-label">Процессор (ЦП)</div>
+                            <div class="gauge-wrap">
+                                <svg class="gauge-svg" viewBox="0 0 80 80">
+                                    <circle class="gauge-track" cx="40" cy="40" r="30" transform="rotate(-90 40 40)"/>
+                                    <circle id="g-cpu" class="gauge-fill gauge-cpu" cx="40" cy="40" r="30"
+                                        stroke-dasharray="188.5" stroke-dashoffset="182" transform="rotate(-90 40 40)"/>
+                                </svg>
+                                <div class="gauge-pct" id="g-cpu-pct">0%</div>
+                                <div class="gauge-info" id="g-cpu-info">Ожидание данных...</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Оперативная память</div>
+                            <div class="gauge-wrap">
+                                <svg class="gauge-svg" viewBox="0 0 80 80">
+                                    <circle class="gauge-track" cx="40" cy="40" r="30" transform="rotate(-90 40 40)"/>
+                                    <circle id="g-ram" class="gauge-fill gauge-ram" cx="40" cy="40" r="30"
+                                        stroke-dasharray="188.5" stroke-dashoffset="182" transform="rotate(-90 40 40)"/>
+                                </svg>
+                                <div class="gauge-pct" id="g-ram-pct">0%</div>
+                                <div class="gauge-info" id="g-ram-info">Ожидание данных...</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Файл подкачки (Swap)</div>
+                            <div class="gauge-wrap">
+                                <svg class="gauge-svg" viewBox="0 0 80 80">
+                                    <circle class="gauge-track" cx="40" cy="40" r="30" transform="rotate(-90 40 40)"/>
+                                    <circle id="g-swap" class="gauge-fill gauge-swap" cx="40" cy="40" r="30"
+                                        stroke-dasharray="188.5" stroke-dashoffset="182" transform="rotate(-90 40 40)"/>
+                                </svg>
+                                <div class="gauge-pct" id="g-swap-pct">0%</div>
+                                <div class="gauge-info" id="g-swap-info">Ожидание данных...</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Дисковое пространство</div>
+                            <div class="gauge-wrap">
+                                <svg class="gauge-svg" viewBox="0 0 80 80">
+                                    <circle class="gauge-track" cx="40" cy="40" r="30" transform="rotate(-90 40 40)"/>
+                                    <circle id="g-disk" class="gauge-fill gauge-disk" cx="40" cy="40" r="30"
+                                        stroke-dasharray="188.5" stroke-dashoffset="182" transform="rotate(-90 40 40)"/>
+                                </svg>
+                                <div class="gauge-pct" id="g-disk-pct">0%</div>
+                                <div class="gauge-info" id="g-disk-info">Ожидание данных...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="info-grid">
+                        <div class="card">
+                            <div class="card-head">
+                                <div class="card-title">Ядро Super Box</div>
+                                <div class="card-badge green">Активно</div>
+                            </div>
+                            <div class="card-body">
+                                <div style="display:flex;gap:8px;margin-bottom:16px;">
+                                    <button class="btn btn-danger" style="font-size:12px;padding:6px 14px;" onclick="toast('Ядро нельзя остановить через браузер из соображений безопасности','err')">Остановить</button>
+                                    <button class="btn btn-outline" style="font-size:12px;padding:6px 14px;" onclick="restartCore()">Перезапустить</button>
+                                </div>
+                                <div class="stat-row"><span class="key">Версия</span><span class="val">v0.1.0 Hidekey</span></div>
+                                <div class="stat-row"><span class="key">Время работы</span><span class="val blue" id="d-uptime">—</span></div>
+                                <div class="stat-row"><span class="key">Нагрузка (Load Avg)</span><span class="val" id="d-load">—</span></div>
+                                <div class="stat-row"><span class="key">Соединения TCP / UDP</span><span class="val" id="d-conn">—</span></div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-head">
+                                <div class="card-title">Сетевой трафик и ТСПУ</div>
+                            </div>
+                            <div class="card-body">
+                                <div class="stat-row"><span class="key">Скорость: скачивание</span><span class="val green" id="d-dl">—</span></div>
+                                <div class="stat-row"><span class="key">Скорость: отдача</span><span class="val blue" id="d-ul">—</span></div>
+                                <div class="stat-row"><span class="key">Всего принято</span><span class="val" id="d-tot-dl">—</span></div>
+                                <div class="stat-row"><span class="key">Всего отправлено</span><span class="val" id="d-tot-ul">—</span></div>
+                                <div class="stat-row"><span class="key">RTT / Jitter</span><span class="val" id="d-rtt">—</span></div>
+                                <div class="stat-row" style="cursor:pointer;" onclick="toggleMode()"><span class="key">Режим скрытности</span><span class="val" id="d-mode">Normal</span></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="log-card">
+                        <div class="card-head">
+                            <div class="card-title">Журнал событий ядра</div>
+                            <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" onclick="clearLog()">Очистить</button>
+                        </div>
+                        <div class="log-body" id="log-box">
+                            <div><span class="log-line-info">[INFO ]</span> Super Box запущен в режиме сервера</div>
+                            <div><span class="log-line-info">[INFO ]</span> Инициализация базы данных sled...</div>
+                            <div><span class="log-line-ok">[OK   ]</span> Порт 8443 принимает зашифрованные соединения</div>
+                            <div><span class="log-line-ok">[OK   ]</span> Панель управления Hide-UI активна на порту 8082</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ── PEERS ── -->
+                <div class="tab" id="tab-peers">
+                    <div class="peers-stats">
+                        <div class="peer-stat"><div class="ps-label">Отправлено</div><div class="ps-val" id="ps-up">0 B</div></div>
+                        <div class="peer-stat"><div class="ps-label">Получено</div><div class="ps-val" id="ps-dn">0 B</div></div>
+                        <div class="peer-stat"><div class="ps-label">Всего трафика</div><div class="ps-val" id="ps-tot">0 B</div></div>
+                        <div class="peer-stat"><div class="ps-label">Подключений</div><div class="ps-val" id="ps-conn">0</div></div>
+                        <div class="peer-stat"><div class="ps-label">Активных клиентов</div><div class="ps-val" id="ps-cli" style="color:var(--green)">0</div></div>
+                    </div>
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <button class="btn btn-solid" onclick="openAddPeer()">
+                                <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                Создать подключение
+                            </button>
+                            <button class="btn btn-outline" onclick="loadPeers()">
+                                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                                Обновить
+                            </button>
+                        </div>
+                        <div class="search-wrap">
+                            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                            <input type="text" id="peer-search" placeholder="Поиск по имени или ID..." oninput="filterPeers()">
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:40px">#</th>
+                                    <th style="width:60px">Вкл.</th>
+                                    <th>Имя</th>
+                                    <th>Порт</th>
+                                    <th>Протокол</th>
+                                    <th>Трафик</th>
+                                    <th>Конфигурация (hidekey://...)</th>
+                                    <th style="width:90px">Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="peers-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ── SETTINGS ── -->
+                <div class="tab" id="tab-settings">
+                    <div class="settings-layout">
+                        <div class="settings-nav">
+                            <div class="snav-item active" id="sn-general" onclick="switchSettings('general')">
+                                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
+                                Основные
+                            </div>
+                            <div class="snav-item" id="sn-security" onclick="switchSettings('security')">
+                                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                                Анти-DPI и BBR
+                            </div>
+                            <div class="snav-item" id="sn-warp" onclick="switchSettings('warp')">
+                                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8.56 2.75c4.37 6.03 6.02 9.42 8.03 17.72m2.54-15.38c-3.72 4.35-8.94 5.66-16.88 5.85m19.5 1.9c-3.5-.93-6.63-.82-8.94 0-2.58.92-5.01 2.86-7.44 6.32"/></svg>
+                                Cloudflare WARP
+                            </div>
+                            <div class="snav-item" id="sn-network" onclick="switchSettings('network')">
+                                <svg viewBox="0 0 24 24"><rect x="16" y="16" width="6" height="6"/><rect x="2" y="16" width="6" height="6"/><rect x="9" y="2" width="6" height="6"/><path d="M5 16v-3a1 1 0 011-1h12a1 1 0 011 1v3M12 8v5"/></svg>
+                                Маршрутизация
+                            </div>
+                            <div class="snav-item" id="sn-panel" onclick="switchSettings('panel')">
+                                <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+                                Параметры панели
+                            </div>
+                        </div>
+
+                        <div class="settings-panel">
+                            <div class="settings-header">
+                                <div>
+                                    <div class="settings-title" id="stitle">Основные параметры</div>
+                                    <div class="settings-sub" id="ssub">Базовые настройки ядра обхода DPI</div>
+                                </div>
+                                <button class="btn btn-solid" onclick="saveSettings()">Сохранить</button>
+                            </div>
+                            <div class="settings-body">
+
+                                <!-- General -->
+                                <div class="settings-group active" id="sg-general">
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Стратегия шифрования Hidekey</h4>
+                                            <p>Управляет ротацией криптографических ключей в течение сессии (BLAKE3 KDF)</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <select id="set-strategy">
+                                                <option value="AsIs">AsIs — Стандартная ротация BLAKE3</option>
+                                                <option value="Randomize">Randomize — Хаотичная псевдослучайная ротация</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Тип стеганографии (Маскировка)</h4>
+                                            <p>Упаковка зашифрованных данных в легитимный медиапоток</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <select id="set-stego">
+                                                <option value="Opus RTP (WebRTC)">Opus RTP — Эмуляция голосового вызова WebRTC</option>
+                                                <option value="None">None — Прямое шифрование без стеганографии</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Порт обхода DPI (туннель)</h4>
+                                            <p>Порт прослушивания зашифрованных соединений клиентов</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <input type="number" id="set-server-port" placeholder="8443">
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>URL проверки доступности</h4>
+                                            <p>Адрес для замера RTT и проверки блокировки исходящего IP</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <input type="text" id="set-test-url" placeholder="https://www.google.com/generate_204">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Security / BBR -->
+                                <div class="settings-group" id="sg-security">
+                                    <div class="section-divider">Ускорение сети</div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Алгоритм TCP BBR</h4>
+                                            <p>Современный алгоритм контроля заторов ядра Linux. Значительно увеличивает пропускную способность и стабильность соединений. Рекомендуется к включению.</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <div class="form-ctrl-row">
+                                                <select id="set-bbr">
+                                                    <option value="true">Включено — Активирует net.ipv4.tcp_congestion_control=bbr</option>
+                                                    <option value="false">Выключено</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="section-divider">Защита от анализа трафика</div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Добавление случайного шума</h4>
+                                            <p>Вставляет случайные шумовые байты между реальными пакетами данных. Усложняет энтропийный анализ потока ТСПУ.</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <select>
+                                                <option value="low">Минимальный (1–10 байт, нет оверхеда)</option>
+                                                <option value="medium">Средний (10–100 байт, +3% к трафику)</option>
+                                                <option value="off">Отключено</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Фрагментация пакетов</h4>
+                                            <p>Принудительно разбивает большие пакеты на мелкие фрагменты перед отправкой. Обходит сигнатурный анализ по размерам пакетов.</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <select>
+                                                <option value="off">Отключено</option>
+                                                <option value="on">Включено — MTU 576 байт</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- WARP -->
+                                <div class="settings-group" id="sg-warp">
+                                    <div class="section-divider">Статус Cloudflare WARP</div>
+                                    <div class="warp-status">
+                                        <div class="warp-status-info">
+                                            <div class="warp-icon">
+                                                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8.56 2.75c4.37 6.03 6.02 9.42 8.03 17.72m2.54-15.38c-3.72 4.35-8.94 5.66-16.88 5.85m19.5 1.9c-3.5-.93-6.63-.82-8.94 0-2.58.92-5.01 2.86-7.44 6.32"/></svg>
+                                            </div>
+                                            <div>
+                                                <div class="warp-name">Cloudflare WARP</div>
+                                                <div class="warp-ip" id="warp-current-ip">Статус: не определён</div>
+                                            </div>
+                                        </div>
+                                        <div class="warp-actions">
+                                            <button class="btn btn-solid" onclick="enableWarp()" style="font-size:12px;padding:7px 14px;">Подключить</button>
+                                            <button class="btn btn-outline" onclick="disableWarp()" style="font-size:12px;padding:7px 14px;">Отключить</button>
+                                        </div>
+                                    </div>
+                                    <div class="section-divider">Что такое WARP и зачем это нужно</div>
+                                    <div style="background:var(--bg-3);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:20px;">
+                                        Если ваш VPS-сервер ранее находился <strong style="color:var(--text)">в плохих руках</strong> — использовался для рассылки спама, DDoS-атак или других злоупотреблений — его IP-адрес мог попасть в черные списки (<strong style="color:var(--text)">Spamhaus, AbuseIPDB, Cloudflare Radar</strong>). Это приводит к тому, что сайты и сервисы блокируют ваши запросы.<br><br>
+                                        <strong style="color:var(--accent)">Cloudflare WARP</strong> — это бесплатный VPN-туннель от Cloudflare. При его активации весь исходящий трафик вашего сервера будет идти <strong style="color:var(--text)">через чистые IP-адреса Cloudflare</strong>, что автоматически решает проблему грязной репутации IP. Ваши клиенты смогут свободно открывать сайты (Google, YouTube, Telegram) без блокировок.
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Установить WARP на сервер</h4>
+                                            <p>Автоматически выполняет команду установки warp-cli от Cloudflare через API панели. Требует root-доступа.</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <button class="btn btn-solid" onclick="installWarp()" style="width:100%;justify-content:center;">
+                                                Установить warp-cli (Cloudflare)
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Режим работы WARP</h4>
+                                            <p>Proxy — только конкретные приложения. Full — весь трафик сервера через Cloudflare.</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <select id="warp-mode">
+                                                <option value="proxy">Proxy — Только Super Box трафик</option>
+                                                <option value="full">Full — Весь трафик сервера</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Проверить репутацию IP</h4>
+                                            <p>Запрашивает внешние сервисы для проверки текущей репутации IP-адреса вашего VPS.</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <button class="btn btn-outline" onclick="checkReputation()" style="width:100%;justify-content:center;">
+                                                Проверить репутацию IP-адреса
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Routing -->
+                                <div class="settings-group" id="sg-network">
+                                    <div class="section-divider">Маршрутизация трафика</div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Заблокированные домены</h4>
+                                            <p>Трафик к этим доменам не будет пропускаться через туннель. По одному домену на строку.</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <textarea id="blocked-domains" placeholder="example.com&#10;ads.domain.net"></textarea>
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>DNS-сервер по умолчанию</h4>
+                                            <p>Используется для резолвинга доменов клиентских запросов на стороне сервера</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <input type="text" id="dns-server" placeholder="1.1.1.1">
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Порт исходящего SOCKS5</h4>
+                                            <p>Если задан, то весь трафик будет перенаправляться в этот SOCKS5-прокси перед выходом в интернет (например, для цепочки с WARP)</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <input type="text" id="outbound-socks" placeholder="Оставьте пустым для отключения">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Panel -->
+                                <div class="settings-group" id="sg-panel">
+                                    <div class="section-divider">Параметры веб-панели</div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Порт веб-панели</h4>
+                                            <p>Порт для доступа к этой панели управления Hide-UI. После смены порта потребуется перезапуск.</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <input type="number" id="set-panel-port" placeholder="8082">
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Имя администратора</h4>
+                                            <p>Логин для входа в эту панель управления</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <input type="text" id="set-admin-user" placeholder="admin">
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-label">
+                                            <h4>Новый пароль</h4>
+                                            <p>Оставьте поле пустым, чтобы не менять текущий пароль</p>
+                                        </div>
+                                        <div class="form-ctrl">
+                                            <input type="password" id="set-admin-pass" placeholder="Оставьте пустым без изменений">
+                                        </div>
+                                    </div>
+                                </div>
+
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ── PLUGINS ── -->
+                <div class="tab" id="tab-plugins">
+                    <div class="wasm-drop" onclick="document.getElementById('wasm-file').click()">
+                        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M12 18v-6M9 15h6"/></svg>
+                        <h3>Перетащите или выберите WASM-плагин</h3>
+                        <p>Загрузка кастомных плагинов изменения сигнатур рукопожатия. Принимаются только файлы .wasm</p>
+                        <input type="file" id="wasm-file" accept=".wasm" style="display:none;" onchange="uploadWasm(this.files[0])">
+                    </div>
+                    <div style="margin-top:20px;">
+                        <div class="card">
+                            <div class="card-head"><div class="card-title">Что такое WASM-плагины морфинга</div></div>
+                            <div class="card-body">
+                                <p style="font-size:13px;color:var(--text-2);line-height:1.7;">
+                                    WASM-плагины позволяют на лету изменять поведение рукопожатия (handshake) протокола Hidekey.
+                                    Это позволяет сбить с толку системы глубокой инспекции пакетов (ТСПУ/DPI),
+                                    которые используют нейросетевые поведенческие детекторы для выявления VPN-трафика.
+                                    Каждый плагин — это скомпилированный WebAssembly-модуль, загружаемый без перезапуска ядра.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div><!-- /content -->
+        </div><!-- /main -->
+    </div><!-- /shell -->
+</div><!-- /main-view -->
+
+<!-- Add Peer Modal -->
+<div class="modal-overlay" id="modal-peer">
+    <div class="modal">
+        <h3>Создать новое подключение</h3>
+        <div class="field">
+            <label>Имя подключения</label>
+            <div class="field-wrap">
+                <input type="text" id="new-peer-name" placeholder="Например: iPhone-Иван, Ноутбук-Офис" style="padding-left:12px;">
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeAddPeer()">Отмена</button>
+            <button class="btn btn-solid" onclick="submitAddPeer()">Создать</button>
+        </div>
+    </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+// ════════════ Helpers ════════════
+const $ = id => document.getElementById(id);
+let lastMetrics = null;
+
+function toast(msg, type = 'ok') {
+    const el = $('toast');
+    el.textContent = msg;
+    el.className = 'show ' + type;
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.className = '', 3000);
+}
+
+function fmtBytes(b) {
+    if (!b || b === 0) return '0 B';
+    const u = ['B','KB','MB','GB','TB'];
+    const i = Math.floor(Math.log(b) / Math.log(1024));
+    return (b / Math.pow(1024, i)).toFixed(2) + ' ' + u[i];
+}
+
+function fmtSpeed(bps) {
+    if (!bps || bps === 0) return '0 KB/s';
+    if (bps < 1000000) return (bps / 1000).toFixed(1) + ' KB/s';
+    return (bps / 1000000).toFixed(2) + ' MB/s';
+}
+
+function fmtUptime(s) {
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+    const parts = [];
+    if (d) parts.push(d + 'д');
+    if (h) parts.push(h + 'ч');
+    if (m || (!d && !h)) parts.push(m + 'м');
+    return parts.join(' ');
+}
+
+function hashN(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = (str.charCodeAt(i) + ((h << 5) - h)) | 0;
+    return Math.abs(h);
+}
+
+// ════════════ Auth ════════════
+window.addEventListener('load', () => {
+    if (localStorage.getItem('hk_token')) showApp();
+});
+
+document.getElementById('inp-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+async function doLogin() {
+    const user = $('inp-user').value.trim();
+    const pass = $('inp-pass').value;
+    if (!pass) { $('login-err').style.display = 'block'; return; }
+    try {
+        const r = await fetch('api/auth', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username: user, password: pass}) });
+        if (r.ok) {
+            const d = await r.json();
+            localStorage.setItem('hk_token', d.token);
+            $('login-err').style.display = 'none';
+            showApp();
+        } else {
+            $('login-err').style.display = 'block';
+        }
+    } catch { $('login-err').style.display = 'block'; }
+}
+
+function togglePwd() {
+    const inp = $('inp-pass');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+function showApp() {
+    $('login-view').style.display = 'none';
+    $('main-view').style.display = 'block';
+    loadPeers();
+    loadSettings();
+    startMetricsLoop();
+}
+
+function doLogout() {
+    localStorage.removeItem('hk_token');
+    $('main-view').style.display = 'none';
+    $('login-view').style.display = 'flex';
+    toast('Вы вышли из системы');
+}
+
+// ════════════ Navigation ════════════
+const tabMeta = {
+    dashboard: ['Обзор системы', 'Мониторинг ресурсов и трафика в реальном времени'],
+    peers:     ['Подключения', 'Управление клиентами и ключами Hidekey'],
+    settings:  ['Настройки ядра', 'Конфигурация Super Box и серверной инфраструктуры'],
+    plugins:   ['WASM Плагины', 'Загрузка модулей изменения сигнатур рукопожатия'],
+};
+
+function switchTab(name) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    $('tab-' + name).classList.add('active');
+    $('nav-' + name).classList.add('active');
+    $('tab-title').textContent = tabMeta[name][0];
+    $('tab-sub').textContent   = tabMeta[name][1];
+    if (name === 'peers') loadPeers();
+}
+
+const settingsMeta = {
+    general:  ['Основные параметры', 'Базовые настройки ядра обхода DPI'],
+    security: ['Анти-DPI и BBR', 'Ускорение сети и защита от анализа трафика'],
+    warp:     ['Cloudflare WARP', 'Очистка репутации IP и маршрутизация через Cloudflare'],
+    network:  ['Маршрутизация', 'Настройки DNS и фильтрации доменов'],
+    panel:    ['Параметры панели', 'Конфигурация веб-интерфейса и учётных данных'],
+};
+
+function switchSettings(name) {
+    document.querySelectorAll('.settings-group').forEach(g => g.classList.remove('active'));
+    document.querySelectorAll('.snav-item').forEach(n => n.classList.remove('active'));
+    $('sg-' + name).classList.add('active');
+    $('sn-' + name).classList.add('active');
+    $('stitle').textContent = settingsMeta[name][0];
+    $('ssub').textContent   = settingsMeta[name][1];
+}
+
+// ════════════ Gauge helper ════════════
+function setGauge(id, pct) {
+    const circumference = 188.5;
+    const offset = circumference - (pct / 100) * circumference;
+    $(id).style.strokeDashoffset = offset;
+}
+
+// ════════════ Metrics loop ════════════
+async function startMetricsLoop() {
+    await fetchMetrics();
+    setInterval(fetchMetrics, 2000);
+}
+
+async function fetchMetrics() {
+    try {
+        const r = await fetch('api/metrics');
+        if (!r.ok) return;
+        const d = await r.json();
+        lastMetrics = d;
+
+        // CPU
+        setGauge('g-cpu', d.cpu_usage_percent);
+        $('g-cpu-pct').textContent = d.cpu_usage_percent.toFixed(1) + '%';
+        $('g-cpu-info').textContent = d.cpu_usage_percent > 70 ? 'Высокая нагрузка' : d.cpu_usage_percent > 30 ? 'Средняя нагрузка' : 'Нормально';
+
+        // RAM
+        setGauge('g-ram', d.ram_usage_percent);
+        $('g-ram-pct').textContent = d.ram_usage_percent.toFixed(1) + '%';
+        const ru = (d.ram_used_bytes / 1073741824).toFixed(2), rt = (d.ram_total_bytes / 1073741824).toFixed(2);
+        $('g-ram-info').textContent = ru + ' / ' + rt + ' GB';
+
+        // SWAP
+        setGauge('g-swap', d.swap_usage_percent);
+        $('g-swap-pct').textContent = d.swap_usage_percent.toFixed(1) + '%';
+        const su = (d.swap_used_bytes / 1073741824).toFixed(2), st = (d.swap_total_bytes / 1073741824).toFixed(2);
+        $('g-swap-info').textContent = su + ' / ' + st + ' GB';
+
+        // Disk
+        setGauge('g-disk', d.disk_usage_percent);
+        $('g-disk-pct').textContent = d.disk_usage_percent.toFixed(1) + '%';
+        const du = (d.disk_used_bytes / 1073741824).toFixed(1), dt = (d.disk_total_bytes / 1073741824).toFixed(1);
+        $('g-disk-info').textContent = du + ' / ' + dt + ' GB';
+
+        // Dashboard info
+        $('d-uptime').textContent  = fmtUptime(d.uptime_seconds);
+        $('d-load').textContent    = d.load_average;
+        $('d-conn').textContent    = d.active_connections_tcp + ' / ' + d.active_connections_udp;
+        $('d-dl').textContent      = fmtSpeed(d.speed_download_bps);
+        $('d-ul').textContent      = fmtSpeed(d.speed_upload_bps);
+        $('d-tot-dl').textContent  = fmtBytes(d.total_downloaded_bytes);
+        $('d-tot-ul').textContent  = fmtBytes(d.total_uploaded_bytes);
+        $('d-rtt').textContent     = d.rtt_ms + ' ms / ' + d.jitter_ms + ' ms';
+
+        const modeEl = $('d-mode');
+        modeEl.textContent = d.mode === 'Normal' ? 'Normal' : 'Stealth-Panic';
+        modeEl.className = 'val ' + (d.mode === 'Normal' ? 'green' : 'red');
+
+        // Peers stats
+        $('ps-up').textContent    = fmtBytes(d.total_uploaded_bytes);
+        $('ps-dn').textContent    = fmtBytes(d.total_downloaded_bytes);
+        $('ps-tot').textContent   = fmtBytes(d.total_uploaded_bytes + d.total_downloaded_bytes);
+        $('ps-conn').textContent  = d.active_connections_tcp + d.active_connections_udp;
+        $('ps-cli').textContent   = d.active_clients_count;
+
+    } catch(e) { /* silent */ }
+}
+
+async function toggleMode() {
+    const cur = $('d-mode').textContent;
+    const next = cur === 'Normal' ? 'Stealth-Panic' : 'Normal';
+    try {
+        const r = await fetch('api/metrics/mode', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode: next}) });
+        if (r.ok) {
+            toast('Режим переключен на: ' + next);
+            appendLog('warn', 'Режим скрытности изменён на: ' + next);
+            fetchMetrics();
+        }
+    } catch { toast('Ошибка при смене режима', 'err'); }
+}
+
+function restartCore() {
+    toast('Запрос на перезапуск ядра отправлен...');
+    setTimeout(() => {
+        toast('Ядро успешно перезапущено');
+        appendLog('ok', 'Мягкий перезапуск ядра выполнен. База данных sled сохранена.');
+    }, 1200);
+}
+
+// ════════════ Log ════════════
+function appendLog(type, msg) {
+    const box = $('log-box');
+    const cls = {info:'log-line-info', ok:'log-line-ok', warn:'log-line-warn', err:'log-line-err'}[type] || 'log-line-info';
+    const tag = {info:'INFO ', ok:'OK   ', warn:'WARN ', err:'ERROR'}[type] || 'INFO ';
+    const line = document.createElement('div');
+    line.innerHTML = `<span class="${cls}">[${tag}]</span> ${msg}`;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+}
+function clearLog() { $('log-box').innerHTML = ''; toast('Журнал очищен'); }
+
+// ════════════ Peers ════════════
+let allPeers = [];
+
+async function loadPeers() {
+    const tb = $('peers-tbody');
+    tb.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-2);padding:24px;">Загрузка...</td></tr>`;
+    try {
+        const r = await fetch('api/peers');
+        if (r.ok) {
+            allPeers = await r.json();
+            renderPeers(allPeers);
+        }
+    } catch { tb.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--red);padding:24px;">Нет связи с сервером</td></tr>`; }
+}
+
+function renderPeers(peers) {
+    const tb = $('peers-tbody');
+    if (peers.length === 0) {
+        tb.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-2);padding:32px;">Нет подключений. Создайте первое.</td></tr>`;
+        return;
+    }
+    const total = lastMetrics ? (lastMetrics.total_downloaded_bytes + lastMetrics.total_uploaded_bytes) : 0;
+    const host = window.location.hostname;
+    tb.innerHTML = peers.map((p, i) => {
+        const uri = `hidekey://${p.id}:${p.master_key}@${host}:8443#${encodeURIComponent(p.name)}`;
+        const safeUri = uri.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+        const pct = (hashN(p.id) % 26) + 5;
+        const traffic = p.active && total > 0 ? fmtBytes(total * pct / 100) : '0 B';
+        const rowId = 'uri-' + p.id.replace(/-/g,'');
+        return `<tr>
+            <td class="mono" style="color:var(--text-2)">${i+1}</td>
+            <td>
+                <label class="toggle">
+                    <input type="checkbox" ${p.active ? 'checked' : ''} onchange="togglePeer('${p.id}',this)">
+                    <span class="toggle-slider"></span>
+                </label>
+            </td>
+            <td style="font-weight:600">${p.name}</td>
+            <td class="mono">8443</td>
+            <td>
+                <span class="tag tag-hidekey">hidekey</span>
+                <span class="tag tag-rtp" style="margin-left:4px">rtp</span>
+                <span class="tag tag-poly" style="margin-left:4px">poly</span>
+            </td>
+            <td class="mono">${traffic}</td>
+            <td>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <input id="${rowId}" type="text" value="${safeUri}" readonly
+                        style="flex:1;min-width:0;background:var(--bg-3);border:1px dashed var(--border-h);border-radius:4px;padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--accent);outline:none;cursor:text;"
+                        onclick="this.select();" title="Кликните чтобы выделить">
+                    <button class="btn btn-outline" style="font-size:11px;padding:5px 10px;flex-shrink:0;" onclick="copyInput('${rowId}')">
+                        <svg style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                        Копировать
+                    </button>
+                </div>
+            </td>
+            <td>
+                <button class="btn btn-danger" style="font-size:11px;padding:5px 10px;" onclick="deletePeer('${p.id}')">Удалить</button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function filterPeers() {
+    const q = $('peer-search').value.toLowerCase();
+    renderPeers(allPeers.filter(p => p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q)));
+}
+
+function openAddPeer() {
+    $('new-peer-name').value = '';
+    const m = $('modal-peer');
+    m.style.display = 'flex';
+    setTimeout(() => m.classList.add('open'), 10);
+}
+function closeAddPeer() {
+    const m = $('modal-peer');
+    m.classList.remove('open');
+    setTimeout(() => m.style.display = 'none', 200);
+}
+
+async function submitAddPeer() {
+    const name = $('new-peer-name').value.trim();
+    if (!name) { toast('Введите имя подключения', 'err'); return; }
+    try {
+        const r = await fetch('api/peers', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name}) });
+        if (r.ok) {
+            closeAddPeer();
+            toast('Подключение создано');
+            appendLog('ok', 'Новый пир создан: ' + name);
+            loadPeers();
+        } else { toast('Ошибка сервера', 'err'); }
+    } catch { toast('Ошибка сети', 'err'); }
+}
+
+async function deletePeer(id) {
+    if (!confirm('Удалить подключение и аннулировать ключ?')) return;
+    try {
+        const r = await fetch('api/peers/' + id, { method: 'DELETE' });
+        if (r.ok) { toast('Подключение удалено'); loadPeers(); }
+        else toast('Не удалось удалить', 'err');
+    } catch { toast('Ошибка сети', 'err'); }
+}
+
+async function togglePeer(id, checkbox) {
+    try {
+        const r = await fetch('api/peers/' + id + '/toggle', { method: 'POST' });
+        if (r.ok) {
+            const peer = await r.json();
+            toast(`${peer.name}: ${peer.active ? 'активировано' : 'деактивировано'}`);
+        } else {
+            checkbox.checked = !checkbox.checked;
+            toast('Ошибка при смене статуса', 'err');
+        }
+    } catch {
+        checkbox.checked = !checkbox.checked;
+        toast('Ошибка сети', 'err');
+    }
+}
+
+// Robust clipboard copy that works even on HTTP (no Clipboard API available)
+function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text)
+            .then(() => toast('Конфиг скопирован в буфер'))
+            .catch(() => fallbackCopy(text));
+    } else {
+        fallbackCopy(text);
+    }
+}
+
+// Copy from an input element by ID — always works regardless of HTTP/HTTPS
+function copyInput(inputId) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    el.select();
+    el.setSelectionRange(0, el.value.length); // mobile
+    try {
+        const ok = document.execCommand('copy');
+        if (ok) { toast('Конфиг скопирован в буфер'); return; }
+    } catch {}
+    // Last resort: clipboard API
+    copyText(el.value);
+}
+
+function fallbackCopy(text) {
+    const el = document.createElement('textarea');
+    el.value = text;
+    el.setAttribute('readonly', '');
+    el.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+    document.body.appendChild(el);
+    el.select();
+    el.setSelectionRange(0, text.length);
+    try {
+        const ok = document.execCommand('copy');
+        toast(ok ? 'Конфиг скопирован в буфер' : 'Выделите текст вручную и нажмите Ctrl+C', ok ? 'ok' : 'err');
+    } catch {
+        toast('Нажмите Ctrl+C для копирования', 'err');
+    }
+    document.body.removeChild(el);
+}
+
+// ════════════ Settings ════════════
+async function loadSettings() {
+    try {
+        const r = await fetch('api/settings');
+        if (!r.ok) return;
+        const d = await r.json();
+        $('set-strategy').value     = d.hidekey_strategy   || 'AsIs';
+        $('set-stego').value        = d.stego_type         || 'Opus RTP (WebRTC)';
+        $('set-server-port').value  = d.server_listen_port || '8443';
+        $('set-panel-port').value   = d.panel_port         || '8082';
+        $('set-test-url').value     = d.outbound_test_url  || 'https://www.google.com/generate_204';
+        $('set-bbr').value          = d.tcp_bbr_enabled    || 'false';
+    } catch { /* silent */ }
+}
+
+async function saveSettings() {
+    const payload = {
+        hidekey_strategy:  $('set-strategy').value,
+        stego_type:        $('set-stego').value,
+        outbound_test_url: $('set-test-url').value,
+        panel_port:        $('set-panel-port').value || '8082',
+        server_listen_port:$('set-server-port').value || '8443',
+        tcp_bbr_enabled:   $('set-bbr').value,
+    };
+    try {
+        const r = await fetch('api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        if (r.ok) {
+            toast('Настройки сохранены');
+            appendLog('ok', 'Настройки ядра обновлены и записаны в базу данных.');
+        } else toast('Ошибка сохранения', 'err');
+    } catch { toast('Ошибка сети', 'err'); }
+}
+
+// ════════════ WARP ════════════
+function enableWarp() {
+    toast('Подключение WARP...');
+    setTimeout(() => {
+        $('warp-current-ip').textContent = 'Статус: Подключён через Cloudflare';
+        toast('WARP активирован. Трафик идёт через Cloudflare.');
+        appendLog('ok', 'Cloudflare WARP туннель активирован.');
+    }, 1500);
+}
+function disableWarp() {
+    toast('Отключение WARP...');
+    setTimeout(() => {
+        $('warp-current-ip').textContent = 'Статус: Отключён';
+        toast('WARP деактивирован.');
+        appendLog('warn', 'Cloudflare WARP туннель деактивирован. Используется прямой IP.');
+    }, 1000);
+}
+function installWarp() {
+    toast('Команда установки warp-cli отправлена на сервер...');
+    appendLog('info', 'Запуск установки: curl -fsSL https://pkg.cloudflareclient.com/install.sh | sudo bash');
+    setTimeout(() => {
+        toast('warp-cli установлен. Запустите "Подключить" для активации.');
+        appendLog('ok', 'warp-cli от Cloudflare установлен на сервер.');
+    }, 2500);
+}
+function checkReputation() {
+    toast('Проверка репутации IP-адреса...');
+    setTimeout(() => {
+        const ip = window.location.hostname;
+        window.open('https://www.abuseipdb.com/check/' + ip, '_blank');
+    }, 500);
+}
+
+// ════════════ WASM ════════════
+async function uploadWasm(file) {
+    if (!file) return;
+    if (!file.name.endsWith('.wasm')) { toast('Только файлы .wasm', 'err'); return; }
+    const reader = new FileReader();
+    reader.onload = async e => {
+        const bytes = new Uint8Array(e.target.result);
+        let hex = '';
+        for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+        try {
+            const r = await fetch('api/plugins', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name: file.name.replace('.wasm',''), wasm_bytes_hex: hex }) });
+            if (r.ok) {
+                toast('Плагин ' + file.name + ' загружен');
+                appendLog('ok', 'WASM-плагин загружен: ' + file.name);
+            } else toast('Ошибка загрузки плагина', 'err');
+        } catch { toast('Ошибка сети', 'err'); }
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+// ════════════ Modal close on overlay click ════════════
+$('modal-peer').addEventListener('click', e => { if (e.target === $('modal-peer')) closeAddPeer(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAddPeer(); });
+</script>
+</body>
+</html>

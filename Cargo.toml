@@ -1,0 +1,88 @@
+[package]
+name = "super_box"
+version = "0.1.0"
+edition = "2021"
+description = "Ultra-lightweight VLESS proxy core inspired by sing-box, built in pure Rust"
+authors = ["SuperBox Contributors"]
+
+[dependencies]
+# Async runtime — full features for TCP/UDP, timers, signals, macros
+tokio = { version = "1", features = ["full"] }
+
+# URL parsing for vless:// URIs
+url = "2"
+
+# UUID v4 parsing and generation for VLESS user IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Structured async-aware logging (replaces env_logger)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# Serialization support for Config (useful for debug output and future use)
+serde = { version = "1", features = ["derive"] }
+
+# Error handling
+thiserror = "2"
+
+# Lightweight HTTP client (configured with rustls for OpenWRT routers compatibility)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# Base64 decoding for subscriptions
+base64 = "0.22"
+
+# Windows systems console APIs for ANSI virtual terminal processing
+windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Networking_WinSock"] }
+
+# Low-level socket control (SO_REUSEADDR, bind_device, etc.)
+socket2 = { version = "0.5", features = ["all"] }
+
+# REALITY handshake cryptography
+x25519-dalek  = { version = "2", features = ["static_secrets"] }
+hmac          = "0.12"
+sha2          = "0.10"
+aes-gcm       = "0.10"
+rand          = "0.8"
+p384 = "0.13.1"
+chacha20poly1305 = "0.10.1"
+blake3 = "1"
+
+# TUN device support
+tun = { version = "0.8", features = ["async"] }
+netstack-smoltcp = "0.2.2"
+futures = "0.3"
+axum = { version = "0.7", features = ["macros"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "tls12"] }
+rcgen = { version = "0.13", features = ["pem", "ring"] }
+time = "0.3"
+
+sled = "0.34"
+serde_json = "1"
+hex = "0.4"
+urlencoding = "2"
+rust-embed = { version = "8", features = ["axum"] }
+mime_guess = "2"
+rustls-pemfile = "2"
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "http1", "http2", "service"] }
+tower = { version = "0.4", features = ["util"] }
+
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", features = ["fs"] }
+
+[lib]
+name = "super_box"
+crate-type = ["rlib", "cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+
+[profile.release]
+opt-level = "z"      # Optimize for binary size (critical for router/NDK targets)
+lto = true           # Link-time optimization
+codegen-units = 1    # Single codegen unit for maximum optimization
+strip = true         # Strip debug symbols from release binary
+panic = "abort"      # Abort on panic — smaller binary, no unwinding overhead
+

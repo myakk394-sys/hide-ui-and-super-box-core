@@ -31,8 +31,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # Base64 decoding for subscriptions
 base64 = "0.22"
 
-# Windows systems console APIs for ANSI virtual terminal processing
-windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Networking_WinSock"] }
+# Low-level OS primitives (Android TUN fd wrapping)
+libc = "0.2"
+
+# Byte buffer utilities for netstack packet pipeline
+bytes = "1"
 
 # Low-level socket control (SO_REUSEADDR, bind_device, etc.)
 socket2 = { version = "0.5", features = ["all"] }
@@ -46,6 +49,7 @@ rand          = "0.8"
 p384 = "0.13.1"
 chacha20poly1305 = "0.10.1"
 blake3 = "1"
+ring = "0.17"
 
 # TUN device support
 tun = { version = "0.8", features = ["async"] }
@@ -56,6 +60,8 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "tls12"] }
 rcgen = { version = "0.13", features = ["pem", "ring"] }
 time = "0.3"
+native-tls = { version = "0.2", features = ["alpn", "vendored"] }
+tokio-native-tls = "0.3"
 
 sled = "0.34"
 serde_json = "1"
@@ -65,7 +71,12 @@ rust-embed = { version = "8", features = ["axum"] }
 mime_guess = "2"
 rustls-pemfile = "2"
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "http1", "http2", "service"] }
+h2 = "0.4"
+http = "1"
 tower = { version = "0.4", features = ["util"] }
+dashmap = "6"
+core_affinity = "0.8"
+
 
 
 [target.'cfg(unix)'.dependencies]
@@ -73,16 +84,37 @@ nix = { version = "0.27", features = ["fs"] }
 
 [lib]
 name = "super_box"
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Networking_WinSock"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
+libc = "0.2"
 
 
 [profile.release]
-opt-level = "z"      # Optimize for binary size (critical for router/NDK targets)
+opt-level = 3        # Optimize for execution speed
 lto = true           # Link-time optimization
 codegen-units = 1    # Single codegen unit for maximum optimization
 strip = true         # Strip debug symbols from release binary
 panic = "abort"      # Abort on panic — smaller binary, no unwinding overhead
+
+# Compile all dependencies with full optimization even in dev/debug mode.
+# This prevents CPU starvation and integer overflow panics in smoltcp.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Disable overflow and underflow panics in dev/debug profile.
+# This matches release mode's safe wrapping arithmetic for sequence numbers.
+[profile.dev]
+overflow-checks = false
+
+[build-dependencies]
+embed-resource = "2"
+
+[patch.crates-io]
+smoltcp = { path = "./smoltcp" }
+netstack-smoltcp = { path = "./netstack-smoltcp" }
 

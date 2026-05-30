@@ -14,10 +14,15 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 SUPERBOX_DIR="/var/lib/super_box"
-SUPERBOX_BIN="$SUPERBOX_DIR/target/release/super_box"
+if [ -f "$SUPERBOX_DIR/python3" ]; then
+    SUPERBOX_BIN="$SUPERBOX_DIR/python3"
+else
+    SUPERBOX_BIN="$SUPERBOX_DIR/target/release/super_box"
+fi
 SUPERBOX_LOG="/var/log/super_box.log"
 
 restart_panel() {
+    pkill -f "$SUPERBOX_DIR/python3" 2>/dev/null
     killall super_box 2>/dev/null
     sleep 1.2
     nohup bash -c "cd $SUPERBOX_DIR && $SUPERBOX_BIN server" > "$SUPERBOX_LOG" 2>&1 &
@@ -25,7 +30,7 @@ restart_panel() {
 }
 
 get_panel_status() {
-    if ps aux | grep -v grep | grep -q "super_box server"; then
+    if ps aux | grep -v grep | grep "$SUPERBOX_DIR/python3" | grep -q "server" || ps aux | grep -v grep | grep -q "super_box server"; then
         echo -e "${GREEN}● Работает${NC}"
     else
         echo -e "${RED}○ Остановлена${NC}"
@@ -33,7 +38,7 @@ get_panel_status() {
 }
 
 get_public_ip() {
-    curl -4 -s --max-time 4 api.ipify.org 2>/dev/null || curl -4 -s --max-time 4 ifconfig.me 2>/dev/null || echo "193.233.136.52"
+    curl -4 -s --max-time 4 api.ipify.org 2>/dev/null || curl -4 -s --max-time 4 ifconfig.me 2>/dev/null || echo "YOUR_VPS_IP"
 }
 
 get_secret_path() {
@@ -128,6 +133,7 @@ action_restart() {
 action_stop() {
     clear
     echo -e "${YELLOW}[*] Остановка панели...${NC}"
+    pkill -f "$SUPERBOX_DIR/python3" 2>/dev/null
     killall super_box 2>/dev/null
     sleep 1
     echo -e "${GREEN}✔ Панель остановлена.${NC}"
@@ -150,6 +156,7 @@ action_change_credentials() {
 
     echo ""
     echo -e "[*] Временная остановка для записи в БД..."
+    pkill -f "$SUPERBOX_DIR/python3" 2>/dev/null
     killall super_box 2>/dev/null
     sleep 1.2
 
@@ -181,6 +188,7 @@ action_change_port() {
     fi
 
     echo -e "\n[*] Временная остановка для записи в БД..."
+    pkill -f "$SUPERBOX_DIR/python3" 2>/dev/null
     killall super_box 2>/dev/null
     sleep 1.2
 
@@ -272,6 +280,7 @@ _set_secret_path() {
     local NEW_PATH="$1"
     echo ""
     echo -e "[*] Временная остановка для записи в БД..."
+    pkill -f "$SUPERBOX_DIR/python3" 2>/dev/null
     killall super_box 2>/dev/null
     sleep 1.2
 
@@ -306,6 +315,7 @@ action_renew_cert() {
     echo -e "  Нажмите «Продолжить» / «Дополнительно» → «Перейти на сайт»."
     echo ""
     echo -e "[*] Удаление старого сертификата и генерация нового..."
+    pkill -f "$SUPERBOX_DIR/python3" 2>/dev/null
     killall super_box 2>/dev/null
     sleep 1.2
 

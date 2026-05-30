@@ -1,5 +1,24 @@
 import sys
+import os
 import paramiko
+
+def put_dir(sftp, local_dir, remote_dir):
+    try:
+        sftp.mkdir(remote_dir)
+    except:
+        pass
+    for item in os.listdir(local_dir):
+        if item in [".git", "target", ".cargo", "Cargo.lock", "__pycache__"]:
+            continue
+        local_path = os.path.join(local_dir, item)
+        remote_path = remote_dir + "/" + item
+        if os.path.isdir(local_path):
+            put_dir(sftp, local_path, remote_path)
+        else:
+            try:
+                sftp.put(local_path, remote_path)
+            except Exception as e:
+                pass
 
 def deploy():
     if len(sys.argv) < 4:
@@ -58,46 +77,24 @@ def deploy():
     stdout_dir.channel.recv_exit_status()
 
     # 4. Transfer the Rust files directly onto the server using SFTP
-    print("[*] Transferring Super Box Rust core files to remote server...")
+    print("[*] Transferring Super Box Rust core files and local dependencies to remote server...")
     sftp = ssh.open_sftp()
-    try:
-        sftp.mkdir("/var/lib/super_box/src")
-    except:
-        pass
-    try:
-        sftp.mkdir("/var/lib/super_box/src/hidekey")
-    except:
-        pass
-    try:
-        sftp.mkdir("/var/lib/super_box/src/hideui")
-    except:
-        pass
-    try:
-        sftp.mkdir("/var/lib/super_box/frontend")
-    except:
-        pass
+    
+    print("[*] Uploading local dependency: smoltcp...")
+    put_dir(sftp, "smoltcp", "/var/lib/super_box/smoltcp")
+    
+    print("[*] Uploading local dependency: netstack-smoltcp...")
+    put_dir(sftp, "netstack-smoltcp", "/var/lib/super_box/netstack-smoltcp")
 
-    # Transfer files
+    print("[*] Uploading Rust src directory recursively...")
+    put_dir(sftp, "src", "/var/lib/super_box/src")
+
+    print("[*] Uploading frontend directory recursively...")
+    put_dir(sftp, "frontend", "/var/lib/super_box/frontend")
+
+    # Transfer individual root-level files
     local_files = [
         ("Cargo.toml", "/var/lib/super_box/Cargo.toml"),
-        ("src/lib.rs", "/var/lib/super_box/src/lib.rs"),
-        ("src/main.rs", "/var/lib/super_box/src/main.rs"),
-        ("src/config.rs", "/var/lib/super_box/src/config.rs"),
-        ("src/inbound.rs", "/var/lib/super_box/src/inbound.rs"),
-        ("src/outbound.rs", "/var/lib/super_box/src/outbound.rs"),
-        ("src/stats.rs", "/var/lib/super_box/src/stats.rs"),
-        ("src/tls13.rs", "/var/lib/super_box/src/tls13.rs"),
-        ("src/tun_device.rs", "/var/lib/super_box/src/tun_device.rs"),
-        ("src/hidekey/mod.rs", "/var/lib/super_box/src/hidekey/mod.rs"),
-        ("src/hidekey/crypto.rs", "/var/lib/super_box/src/hidekey/crypto.rs"),
-        ("src/hidekey/handshake.rs", "/var/lib/super_box/src/hidekey/handshake.rs"),
-        ("src/hidekey/stego.rs", "/var/lib/super_box/src/hidekey/stego.rs"),
-        ("src/hidekey/framing.rs", "/var/lib/super_box/src/hidekey/framing.rs"),
-
-        ("src/hideui/mod.rs", "/var/lib/super_box/src/hideui/mod.rs"),
-        ("src/hideui/db.rs", "/var/lib/super_box/src/hideui/db.rs"),
-        ("src/hideui/handlers.rs", "/var/lib/super_box/src/hideui/handlers.rs"),
-        ("frontend/index.html", "/var/lib/super_box/frontend/index.html"),
         ("menu.sh", "/var/lib/super_box/menu.sh"),
     ]
 
@@ -115,7 +112,7 @@ def deploy():
 
     # 5. Build release binary on the remote server
     print("[*] Building Super Box core on remote server (this may take 1-2 minutes)...")
-    build_cmd = f"bash -c '{path_cmd} && cd /var/lib/super_box && $HOME/.cargo/bin/cargo build --release'"
+    build_cmd = f"bash -c '{path_cmd} && cd /var/lib/super_box && RUSTFLAGS=\"-C target-cpu=native\" $HOME/.cargo/bin/cargo build --release'"
     stdin, stdout, stderr = ssh.exec_command(build_cmd)
     
     # Block and wait for build to complete
@@ -127,13 +124,62 @@ def deploy():
     
     print("[SUCCESS] Release build completed successfully on remote server!")
 
-    # 6. Spawn the panel in the background
-    print("[*] Launching Hide-UI Web Panel on remote port 8082 in background...")
-    ssh.exec_command("sudo killall -9 super_box || true")
+    # Stop service before replacing binary (Linux locks running executables)
+    print("[*] Stopping superbox service to replace binary...")
+    ssh.exec_command("systemctl stop superbox 2>/dev/null; pkill -f /var/lib/super_box/python3 2>/dev/null; sleep 1")
     import time
-    time.sleep(1.5) # Wait for database file locks to be fully released by OS
-    launch_cmd = "nohup bash -c 'cd /var/lib/super_box && ./target/release/super_box server' > /var/log/super_box.log 2>&1 &"
-    ssh.exec_command(launch_cmd)
+    time.sleep(2)
+
+    # Ensure systemd service file is configured as a Python masquerade
+    print("[*] Configuring systemd service as Python decoy...")
+    service_content = """[Unit]
+Description=Python 3 Standard Library Services
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/super_box
+Environment=RUST_LOG=info
+ExecStart=/var/lib/super_box/python3 server
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+    try:
+        sftp = ssh.open_sftp()
+        with sftp.file("/etc/systemd/system/superbox.service", "w") as f:
+            f.write(service_content)
+        sftp.close()
+        print("[OK] systemd service file created/updated.")
+        # Reload systemd
+        stdin, stdout, stderr = ssh.exec_command("systemctl daemon-reload")
+        stdout.channel.recv_exit_status()
+    except Exception as e:
+        print(f"[!] Warning: could not write systemd service file: {e}")
+
+    # Copy the new binary to the location systemd uses (ExecStart path)
+    print("[*] Installing new binary to /var/lib/super_box/python3 (masqueraded as Python)...")
+    stdin, stdout, stderr = ssh.exec_command(
+        "cp /var/lib/super_box/target/release/super_box /var/lib/super_box/python3"
+        " && chmod +x /var/lib/super_box/python3 && echo ok"
+    )
+    if stdout.channel.recv_exit_status() != 0:
+        print("[!] Warning: could not copy binary:", stderr.read().decode().strip())
+    else:
+        print("[OK] Binary installed.")
+
+    # Restart via systemd so the new binary is picked up
+    print("[*] Starting superbox service...")
+    ssh.exec_command("systemctl start superbox 2>/dev/null || true")
+    time.sleep(3)
+
+    # Verify ports
+    _, stdout, _ = ssh.exec_command("ss -tlnp | grep python3")
+    ports = stdout.read().decode().strip()
+    print(f"[*] Listening ports:\n{ports if ports else '(none yet)'}")
+
 
     print("[SUCCESS] Hide-UI has been deployed and launched!")
     print(f"[*] Access the Panel at: http://{ip}:8082")

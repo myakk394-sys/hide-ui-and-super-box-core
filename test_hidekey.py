@@ -133,11 +133,26 @@ def main():
 
     import random
     junk_len = random.randint(16, 128)
-    junk_bytes = os.urandom(junk_len)
-    packet = struct.pack(">H", junk_len) + junk_bytes + challenge
+    junk_bytes = bytearray(os.urandom(junk_len))
+    
+    # Masquerade junk_bytes with a valid RTP v2 header (Opus, Payload Type 111)
+    rtp_state = RtpState()
+    junk_bytes[0] = 0x80 # V=2, P=0, X=0, CC=0
+    junk_bytes[1] = 111  # PT=111
+    junk_bytes[2:4] = struct.pack(">H", rtp_state.seq)
+    junk_bytes[4:8] = struct.pack(">I", rtp_state.timestamp)
+    junk_bytes[8:12] = struct.pack(">I", rtp_state.ssrc)
+    junk_bytes = bytes(junk_bytes)
 
-    sock.sendall(packet)
-    print(f"[OK] ClientChallenge sent (junk={junk_len} bytes)")
+    # Packet 1: Junk packet
+    packet1 = struct.pack(">H", junk_len) + junk_bytes
+
+    # Packet 2: Challenge wrapped in RTP
+    challenge_rtp_packet = rtp_state.pack(challenge)
+    packet2 = struct.pack(">H", len(challenge_rtp_packet)) + challenge_rtp_packet
+
+    sock.sendall(packet1 + packet2)
+    print(f"[OK] ClientChallenge sent (junk={junk_len} bytes, challenge rtp={len(challenge_rtp_packet)} bytes)")
 
     # 4. Read Server's random junk and ServerResponse
     srv_junk_len_bytes = recvall(sock, 2)
@@ -147,7 +162,16 @@ def main():
     # Discard server junk
     _ = recvall(sock, srv_junk_len)
 
-    resp = recvall(sock, 76)
+    # Read Server Response RTP packet
+    srv_resp_len_bytes = recvall(sock, 2)
+    srv_resp_len = struct.unpack(">H", srv_resp_len_bytes)[0]
+    assert srv_resp_len == 88, f"Expected server response RTP packet to be 88 bytes, got {srv_resp_len}"
+    
+    srv_resp_rtp = recvall(sock, srv_resp_len)
+    resp = unpack_rtp(srv_resp_rtp)
+    assert resp is not None, "Failed to unpack server response RTP header"
+    assert len(resp) == 76, f"Expected unpacked server response to be 76 bytes, got {len(resp)}"
+
     server_nonce = resp[0:12]
     server_pub   = resp[12:44]
     server_mac   = resp[44:76]
@@ -164,7 +188,7 @@ def main():
         sock.close()
         return
 
-    print(f"[OK] ServerResponse MAC verified ✓")
+    print(f"[OK] ServerResponse MAC verified")
 
     # 6. Derive session keys via X25519 DH + BLAKE3 KDF
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
@@ -179,7 +203,7 @@ def main():
     # 7. Encrypt and send proxy target: DNS to 8.8.8.8:53
     # Format: CMD(1) + PORT(2) + ATYP(1) + ADDR(N)
     target_frame = bytes([0x01]) + struct.pack(">H", 53) + bytes([0x01]) + bytes([8, 8, 8, 8])
-    print(f"[*] Proxy target: {target_frame.hex()} → 8.8.8.8:53 (server will redirect to 127.0.0.53:53)")
+    print(f"[*] Proxy target: {target_frame.hex()} -> 8.8.8.8:53 (server will redirect to 127.0.0.53:53)")
 
     # Encrypt with tx_key, direction=0x00 (client→server), counter=0
     rtp = RtpState()
@@ -249,16 +273,16 @@ def main():
             answers = struct.unpack(">H", dns_resp[6:8])[0]
             print(f"[OK] DNS response: TX-ID={tx_id}, Flags=0x{flags:04x}, Answers={answers}")
             if answers > 0:
-                print(f"✅ SUCCESS! Hidekey tunnel + DNS resolution working perfectly!")
+                print(f"[SUCCESS] SUCCESS! Hidekey tunnel + DNS resolution working perfectly!")
             else:
-                print(f"⚠️  DNS answered with 0 records (may be NXDOMAIN)")
+                print(f"[WARN] DNS answered with 0 records (may be NXDOMAIN)")
         else:
             print(f"[OK] Got {len(plaintext)} bytes of decrypted data (non-DNS?)")
     else:
         print(f"[FAIL] Response too short: {plaintext.hex()}")
 
     sock.close()
-    print(f"\n✅ Hidekey handshake and encrypted relay test COMPLETE")
+    print(f"\n[SUCCESS] Hidekey handshake and encrypted relay test COMPLETE")
 
 if __name__ == "__main__":
     main()

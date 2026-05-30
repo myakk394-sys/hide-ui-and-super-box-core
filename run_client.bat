@@ -97,14 +97,12 @@ call :restore_dns_silent
 set "BIN=target\release\super_box.exe"
 if "!BUILD_MODE!"=="debug" set "BIN=target\debug\super_box.exe"
 
-if not exist "!BIN!" (
-    echo [*] Binary not found. Building !BUILD_MODE! first...
-    call :do_build
-    if errorlevel 1 (
-        echo [ERROR] Build failed! Cannot start.
-        pause
-        goto :menu
-    )
+echo [*] Building/checking !BUILD_MODE! binary...
+call :do_build
+if errorlevel 1 (
+    echo [ERROR] Build failed! Cannot start.
+    pause
+    goto :menu
 )
 
 :: DNS override

@@ -1,0 +1,7 @@
+{
+  "server_listen_port": 51443,
+  "panel_port": 8082,
+  "sni_override": "cdn.random-site.com",
+  "full_steal_mode": true,
+  "note": "По умолчанию VPN-сервер теперь инициализируется на нестандартном порту 51443 для обхода DPI блокировок на порту 443. Если клиент подключается по IP-адресу, SNI-расширение полностью отсутствует (Full Steal Mode)."
+}

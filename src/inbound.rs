@@ -17,14 +17,193 @@ use crate::hidekey::framing::length_prefix;
 
 use crate::hidekey::crypto::{encrypt_chacha20poly1305, decrypt_chacha20poly1305};
 use crate::hidekey::stego::{RtpSessionState, unpack_rtp};
+use crate::hidekey::tls_tunnel::{make_client_tls_connector, parse_server_name};
+use crate::hidekey::h2_obfs;
+use crate::hidekey::mux::MuxClient;
 
-// ── TLS constants ────────────────────────────────────────────────────────────
+// Глобальный MUX-клиент — одно TLS-соединение для всех потоков.
+// Инициализируется лениво при первом подключении.
+static MUX_CLIENT: tokio::sync::RwLock<Option<Arc<MuxClient>>> = tokio::sync::RwLock::const_new(None);
+
+pub async fn get_active_mux_client() -> Option<Arc<MuxClient>> {
+    let guard = MUX_CLIENT.read().await;
+    guard.as_ref().map(Arc::clone)
+}
+
+/// Получить или создать глобальный MUX-клиент.
+/// При первом вызове устанавливает TLS+H2+Hidekey соединение с сервером.
+async fn get_mux_client(config: &Config, master_key: [u8; 32]) -> Option<Arc<MuxClient>> {
+    // 1. Быстрая синхронная проверка без асинхронного ожидания (ускоряет прокси-логику)
+    if let Ok(read_guard) = MUX_CLIENT.try_read() {
+        if let Some(client) = &*read_guard {
+            if client.is_alive() {
+                return Some(Arc::clone(client));
+            }
+        }
+    }
+
+    // 2. Асинхронная проверка под read-локом, если try_read не удался
+    {
+        let read_guard = MUX_CLIENT.read().await;
+        if let Some(client) = &*read_guard {
+            if client.is_alive() {
+                return Some(Arc::clone(client));
+            }
+        }
+    }
+
+    // 2. Получаем write-лок для пересоздания/инициализации
+    let mut write_guard = MUX_CLIENT.write().await;
+
+    // Двойная проверка (double-checked locking) — вдруг другой поток уже создал клиент
+    if let Some(client) = &*write_guard {
+        if client.is_alive() {
+            return Some(Arc::clone(client));
+        }
+    }
+
+    // Создаём новое соединение
+    let server_addr = format!("{}:{}", config.remote_outbound_address, config.server_listen_port);
+    info!("🔌 MUX: Попытка подключения к серверу: {}", server_addr);
+    let resolved = match tokio::net::lookup_host(&server_addr).await {
+        Ok(mut a) => a.next()?,
+        Err(e) => { error!("❌ MUX: DNS failed for {}: {}", server_addr, e); return None; }
+    };
+
+    let socket = if resolved.is_ipv4() {
+        tokio::net::TcpSocket::new_v4().unwrap()
+    } else {
+        tokio::net::TcpSocket::new_v6().unwrap()
+    };
+
+    // Bypass TUN на Windows
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(if_index) = config.physical_if_index {
+            use std::os::windows::io::AsRawSocket;
+            let raw = socket.as_raw_socket() as usize;
+            let if_index_be = (if_index as u32).to_be();
+            unsafe {
+                windows_sys::Win32::Networking::WinSock::setsockopt(
+                    raw,
+                    0, // IPPROTO_IP
+                    31, // IP_UNICAST_IF
+                    &if_index_be as *const u32 as *const u8,
+                    std::mem::size_of::<u32>() as i32,
+                );
+            }
+        }
+    }
+
+    // Set optimized TCP buffer sizes (1 MB) to maximize throughput over physical WAN/VPN connection
+    let _ = socket.set_send_buffer_size(1024 * 1024);
+    let _ = socket.set_recv_buffer_size(1024 * 1024);
+
+    let tcp_stream = match tokio::time::timeout(
+        tokio::time::Duration::from_secs(15),
+        socket.connect(resolved),
+    ).await {
+        Err(_) => { error!("🔴 MUX: TCP connect timeout"); return None; }
+        Ok(Err(e)) => { error!("🔴 MUX: TCP connect failed: {}", e); return None; }
+        Ok(Ok(s)) => { let _ = s.set_nodelay(true); s }
+    };
+
+    // TLS handshake
+    let sni = config.sni.as_deref().unwrap_or(&config.remote_outbound_address);
+    let server_name = parse_server_name(sni);
+    let connector = make_client_tls_connector();
+    let tls_stream = match connector.connect(&server_name, tcp_stream).await {
+        Ok(s) => s,
+        Err(e) => { error!("🔴 MUX: TLS handshake failed: {}", e); return None; }
+    };
+    debug!("✅ MUX: TLS 1.3 handshake OK (SNI={})", sni);
+
+    // Custom h2_obfs client handshake (HTTP/2 preface only — no auth here)
+    let mut boxed_stream: Box<dyn crate::hidekey::h2_obfs::AsyncStream> = Box::new(tls_stream);
+    if let Err(e) = h2_obfs::client_handshake(&mut boxed_stream).await {
+        error!("🔴 MUX: h2_obfs client handshake failed: {}", e);
+        return None;
+    }
+    debug!("✅ MUX: h2_obfs client handshake OK");
+    // NOTE: Hidekey authentication is performed AFTER H2 setup via /api/v1/auth H2 stream.
+
+    // Standard H2 client handshake using official h2 crate on top of the authenticated obfuscated stream
+    let mut builder = h2::client::Builder::new();
+    builder.max_header_list_size(65536);
+    // Window sizes tuned for 1-core VPS: large enough for throughput, small enough to avoid
+    // memory exhaustion when many streams are active simultaneously.
+    builder.initial_window_size(8_388_608);         // 8 MB per-stream receive window
+    builder.initial_connection_window_size(16_777_216); // 16 MB total connection window
+    builder.max_frame_size(65536);                  // 64 KB frames — sweet spot for latency vs throughput
+    let (send_request, mut connection) = match builder.handshake(boxed_stream).await {
+        Ok(res) => res,
+        Err(e) => { error!("🔴 MUX: H2 client handshake failed: {}", e); return None; }
+    };
+
+    let is_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let is_closed_cloned = Arc::clone(&is_closed);
+
+    // Extract PingPong from the connection for keepalive
+    let ping_pong = connection.ping_pong();
+
+    tokio::spawn(async move {
+        // Run the H2 connection driver to completion
+        if let Err(e) = connection.await {
+            debug!("MuxClient: H2 connection driver error: {}", e);
+        }
+        is_closed_cloned.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Actively clear the global MUX_CLIENT so the next request immediately
+        // creates a new connection instead of seeing a dead (is_alive=false) client.
+        info!("🔄 MUX: H2 connection closed, clearing global MUX_CLIENT for reconnect");
+        let mut w = MUX_CLIENT.write().await;
+        *w = None;
+    });
+
+    // Spawn keepalive task: send H2 PING every 20s to keep NAT sessions alive
+    if let Some(mut pp) = ping_pong {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                match pp.ping(h2::Ping::opaque()).await {
+                    Ok(_) => debug!("MuxClient: H2 PING/PONG OK"),
+                    Err(e) => {
+                        warn!("MuxClient: H2 PING failed (connection dead): {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    let client = Arc::new(MuxClient::new(send_request, is_closed, sni.to_string()));
+
+    // Authenticate via H2 /api/v1/auth stream (server expects this before any /api/v1/stream)
+    if let Err(e) = client.authenticate(master_key).await {
+        error!("🔴 MUX: Hidekey authentication failed: {}", e);
+        return None;
+    }
+    info!("✅ MUX: Hidekey authentication OK");
+
+    info!("✅ MUX: standard H2 multiplexer active");
+
+    // Сохраняем в RwLock
+    *write_guard = Some(Arc::clone(&client));
+
+    Some(client)
+}
+
+// ── TLS constants (used in REALITY handshake path) ───────────────────────────
+#[allow(dead_code)]
 const TLS_RECORD_HANDSHAKE: u8 = 0x16;
-const TLS_LEGACY_VERSION: [u8; 2] = [0x03, 0x01]; // TLS 1.0 record layer (for compat)
+#[allow(dead_code)]
+const TLS_LEGACY_VERSION: [u8; 2] = [0x03, 0x01];
+#[allow(dead_code)]
 const TLS_HANDSHAKE_CLIENT_HELLO: u8 = 0x01;
-const TLS_VERSION_12: [u8; 2] = [0x03, 0x03]; // ClientHello version (TLS 1.2 compat)
+#[allow(dead_code)]
+const TLS_VERSION_12: [u8; 2] = [0x03, 0x03];
 
 // Chrome-like TLS 1.3 cipher suites (matches JA3 fingerprint)
+#[allow(dead_code)]
 const CIPHER_SUITES: &[u8] = &[
     0x13, 0x01, // TLS_AES_128_GCM_SHA256
     0x13, 0x02, // TLS_AES_256_GCM_SHA384
@@ -352,7 +531,8 @@ async fn handle_connection(mut stream: netstack_smoltcp::TcpStream, peer_addr: S
             if let Some(kb) = key_bytes {
                 let mut master_key = [0u8; 32];
                 master_key.copy_from_slice(&kb);
-                handle_hidekey_connection(stream, master_key, dest_ip, port, config).await;
+                // MUX: используем глобальное мультиплексированное соединение
+                handle_mux_session(stream, master_key, dest_ip, port, config).await;
                 return;
             }
         }
@@ -404,6 +584,20 @@ async fn handle_connection(mut stream: netstack_smoltcp::TcpStream, peer_addr: S
     } else {
         tokio::net::TcpSocket::new_v6().unwrap()
     };
+
+    // On Android: protect the outbound socket from being routed through the TUN.
+    // Without this call every packet to the Hidekey server loops back through the
+    // VPN tunnel forever — the #1 cause of "VPN connected but no internet" on Android.
+    #[cfg(target_os = "android")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = socket.as_raw_fd();
+        if crate::android::protect_socket(fd) {
+            debug!("✅ Android: outbound socket fd={} protected from TUN routing", fd);
+        } else {
+            error!("❌ Android: VpnService.protect(fd={}) failed — connection may loop!", fd);
+        }
+    }
 
     // Force-bind this socket to the physical interface (not TUN) using IP_UNICAST_IF.
     // This is the ONLY reliable way to bypass TUN on Windows — route table tricks don't work
@@ -893,16 +1087,17 @@ async fn handle_connection(mut stream: netstack_smoltcp::TcpStream, peer_addr: S
 
         let server_to_client = async move {
             let mut vless_response_skipped = false;
+            let mut buffered_server_read = tokio::io::BufReader::with_capacity(65536, server_read);
             loop {
                 use tokio::io::AsyncReadExt;
                 use tokio::io::AsyncWriteExt;
                 let mut header = [0u8; 5];
-                if server_read.read_exact(&mut header).await.is_err() { break; }
+                if buffered_server_read.read_exact(&mut header).await.is_err() { break; }
                 let len = u16::from_be_bytes([header[3], header[4]]) as usize;
                 
                 if len > 18000 { break; }
                 let mut body = vec![0u8; len];
-                if server_read.read_exact(&mut body).await.is_err() { break; }
+                if buffered_server_read.read_exact(&mut body).await.is_err() { break; }
                 
                 let mut full_record = Vec::with_capacity(5 + len);
                 full_record.extend_from_slice(&header);
@@ -980,7 +1175,7 @@ async fn handle_connection(mut stream: netstack_smoltcp::TcpStream, peer_addr: S
 struct HideCipher {
     key: [u8; 32],
     direction: u8,
-    counter: u32,
+    pub counter: u32,
     rtp_state: RtpSessionState,
 }
 
@@ -1020,6 +1215,159 @@ impl HideCipher {
     }
 }
 
+// ── Hidekey MUX session handler ───────────────────────────────────────────────
+//
+// Вместо создания отдельного TLS-туннеля для каждого TCP-соединения,
+// используем глобальный MuxClient с одним TLS-соединением.
+
+async fn handle_mux_session(
+    tun_stream: netstack_smoltcp::TcpStream,
+    master_key: [u8; 32],
+    dest_ip: std::net::IpAddr,
+    port: u16,
+    config: Arc<Config>,
+) {
+    // UDP transport — fallback на старую логику
+    if config.transport == crate::config::TransportType::Udp {
+        handle_hidekey_udp(tun_stream, master_key, dest_ip, port, config).await;
+        return;
+    }
+
+    // Получаем или создаём MUX-клиент
+    let mux = match get_mux_client(&config, master_key).await {
+        Some(m) => m,
+        None => {
+            error!("❌ MUX: не удалось создать соединение к серверу");
+            return;
+        }
+    };
+
+    // Формируем target_info: CMD/network_type(1) + PORT(2 BE) + ATYP(1) + ADDR(4|16)
+    let mut target_info = Vec::new();
+    target_info.push(0x06); // network_type = TCP (0x06)
+    target_info.extend_from_slice(&port.to_be_bytes());
+    match dest_ip {
+        std::net::IpAddr::V4(ipv4) => {
+            target_info.push(0x01); // ATYP = IPv4
+            target_info.extend_from_slice(&ipv4.octets());
+        }
+        std::net::IpAddr::V6(ipv6) => {
+            target_info.push(0x04); // ATYP = IPv6
+            target_info.extend_from_slice(&ipv6.octets());
+        }
+    }
+
+    // Открываем нативный H2 поток
+    let (response_future, mut send_stream) = match mux.open_stream(&target_info).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("❌ MUX: не удалось открыть H2 stream для {}:{}: {}", dest_ip, port, e);
+            return;
+        }
+    };
+
+    // Ждем подтверждения от сервера с тайм-аутом 15 секунд
+    let response = match tokio::time::timeout(
+        tokio::time::Duration::from_secs(15),
+        response_future
+    ).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            error!("❌ MUX: ошибка получения H2 ответа для {}:{}: {}", dest_ip, port, e);
+            return;
+        }
+        Err(_) => {
+            warn!("⚠️ MUX: тайм-аут получения H2 ответа (10 сек) для {}:{}", dest_ip, port);
+            return;
+        }
+    };
+
+    if response.status() != http::StatusCode::OK {
+        error!("❌ MUX: сервер отклонил H2 stream с кодом {}", response.status());
+        return;
+    }
+
+    let mut recv_stream = response.into_body();
+    debug!("⚡ MUX H2 stream established for {}:{}", dest_ip, port);
+
+    // Relay loop: TUN stream ↔ H2 stream
+    let (mut tun_reader, mut tun_writer) = tokio::io::split(tun_stream);
+
+    // TUN → H2 (upload)
+    let upload_handle = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = bytes::BytesMut::with_capacity(65536);
+        loop {
+            buf.reserve(65536);
+            match tun_reader.read_buf(&mut buf).await {
+                Ok(0) => {
+                    let _ = send_stream.send_data(bytes::Bytes::new(), true); // End of stream
+                    break;
+                }
+                Err(ref e) if e.raw_os_error() == Some(10054) => {
+                    debug!("MUX session TUN ConnectionReset (OS 10054)");
+                    let _ = send_stream.send_data(bytes::Bytes::new(), true);
+                    break;
+                }
+                Err(e) => {
+                    debug!("MUX session TUN read error: {}", e);
+                    let _ = send_stream.send_data(bytes::Bytes::new(), true);
+                    break;
+                }
+                Ok(n) => {
+                    let chunk = buf.split_to(n).freeze();
+                    if let Err(e) = crate::hidekey::mux::send_bytes(&mut send_stream, chunk).await {
+                        debug!("MUX session H2 send_data error: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // H2 → TUN (download)
+    let download_handle = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        loop {
+            match recv_stream.data().await {
+                Some(Ok(chunk)) => {
+                    let len = chunk.len();
+                    // Write to TUN FIRST, then release H2 flow control.
+                    // Releasing before write allows server to flood us faster than smoltcp
+                    // can drain, causing "device exhausted" errors.
+                    if let Err(e) = tun_writer.write_all(&chunk).await {
+                        if e.raw_os_error() == Some(10054) {
+                            debug!("MUX session write to TUN ConnectionReset (OS 10054)");
+                        } else {
+                            debug!("MUX session write to TUN error: {}", e);
+                        }
+                        break;
+                    }
+                    // Release capacity after write succeeds — this naturally throttles the server
+                    // to match TUN drain rate and prevents smoltcp buffer overflow.
+                    let _ = recv_stream.flow_control().release_capacity(len);
+                }
+                Some(Err(e)) => {
+                    debug!("MUX session H2 recv_data error: {}", e);
+                    break;
+                }
+                None => break,
+            }
+        }
+    });
+
+    // Ждём завершения любой стороны
+    let mut upload_handle = upload_handle;
+    let mut download_handle = download_handle;
+    tokio::select! {
+        _ = &mut upload_handle => {}
+        _ = &mut download_handle => {}
+    }
+    upload_handle.abort();
+    download_handle.abort();
+    debug!("✅ MUX session closed: {}:{}", dest_ip, port);
+}
+
 // ── Hidekey protocol client connection handler ────────────────────────────────
 //
 // Called when a hidekey:// config is used.
@@ -1033,6 +1381,12 @@ async fn handle_hidekey_connection(
     port: u16,
     config: Arc<Config>,
 ) {
+    // ── Dispatch: UDP transport or TCP+TLS+H2 ────────────────────────────────
+    if config.transport == crate::config::TransportType::Udp {
+        handle_hidekey_udp(tun_stream, master_key, dest_ip, port, config).await;
+        return;
+    }
+
     let server_addr = format!("{}:{}", config.remote_outbound_address, config.server_listen_port);
 
     // ── 1. Resolve server address ─────────────────────────────────────────────
@@ -1056,6 +1410,20 @@ async fn handle_hidekey_connection(
     } else {
         tokio::net::TcpSocket::new_v6().unwrap()
     };
+
+    // On Android: protect the outbound socket from being routed through the TUN.
+    // Without this call every packet to the Hidekey server loops back through the
+    // VPN tunnel forever — the #1 cause of "VPN connected but no internet" on Android.
+    #[cfg(target_os = "android")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = socket.as_raw_fd();
+        if crate::android::protect_socket(fd) {
+            debug!("✅ Android Hidekey: outbound socket fd={} protected from TUN routing", fd);
+        } else {
+            error!("❌ Android Hidekey: VpnService.protect(fd={}) failed — connection may loop!", fd);
+        }
+    }
 
     #[cfg(target_os = "windows")]
     if let Some(if_index) = config.physical_if_index {
@@ -1089,10 +1457,43 @@ async fn handle_hidekey_connection(
             error!("🔴 Hidekey: TCP connect to {} failed: {}", server_addr, e);
             return;
         }
-        Ok(Ok(s)) => s,
+        Ok(Ok(s)) => {
+            let _ = s.set_nodelay(true);
+            s
+        }
     };
 
-    // ── 3. Hidekey handshake with random junk ────────────────────────────────
+    // ── 3. TLS + HTTP/2 stealth handshake ────────────────────────────────────
+    //
+    // Wrap the raw TCP socket in TLS 1.3 (Chrome-like fingerprint) then
+    // perform the HTTP/2 connection preface so L7 DPI sees a legitimate
+    // HTTPS/HTTP2 session before any Hidekey bytes appear.
+    let sni = config.sni.as_deref().unwrap_or("update.googleapis.com");
+    let server_name = parse_server_name(sni);
+    let connector = make_client_tls_connector();
+
+    let tls_stream = match connector.connect(&server_name, server_stream).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("❌ Hidekey: TLS handshake with {} failed: {}", server_addr, e);
+            return;
+        }
+    };
+
+    debug!("✅ Hidekey: TLS 1.3 handshake OK with {} (SNI={})", server_addr, sni);
+
+    // Box the TLS stream so we can use it generically
+    let mut boxed_stream: Box<dyn crate::hidekey::h2_obfs::AsyncStream> =
+        Box::new(tls_stream);
+
+    if let Err(e) = h2_obfs::client_handshake(&mut boxed_stream).await {
+        error!("❌ Hidekey: HTTP/2 handshake with {} failed: {}", server_addr, e);
+        return;
+    }
+
+    debug!("✅ Hidekey: HTTP/2 handshake OK with {}", server_addr);
+
+    // ── 4. Hidekey handshake via HTTP/2 DATA frames ───────────────────────────
     let hs = ClientHandshake::new(master_key);
     let challenge = hs.build_challenge();
 
@@ -1103,38 +1504,91 @@ async fn handle_hidekey_connection(
     let mut junk_bytes = vec![0u8; junk_len];
     OsRng.fill_bytes(&mut junk_bytes);
 
-    let mut handshake_packet = Vec::with_capacity(2 + junk_len + challenge.to_bytes().len());
-    handshake_packet.extend_from_slice(&(junk_len as u16).to_be_bytes());
-    handshake_packet.extend_from_slice(&junk_bytes);
-    handshake_packet.extend_from_slice(&challenge.to_bytes());
+    // Steganography: insert a valid RTP v2 header at the start of junk_bytes
+    let mut rtp_header = [0u8; 12];
+    let mut rtp_state = crate::hidekey::stego::RtpSessionState::new();
+    let header = crate::hidekey::stego::RtpHeader::new(rtp_state.seq_number, rtp_state.timestamp, rtp_state.ssrc);
+    header.serialize(&mut rtp_header);
+    junk_bytes[0..12].copy_from_slice(&rtp_header);
 
-    if let Err(e) = server_stream.write_all(&handshake_packet).await {
-        error!("❌ Hidekey: Failed to send ClientChallenge to {}: {}", server_addr, e);
+    // Packet 1: Junk (2-byte length prefix + RTP junk)
+    let mut packet1 = Vec::with_capacity(2 + junk_len);
+    packet1.extend_from_slice(&(junk_len as u16).to_be_bytes());
+    packet1.extend_from_slice(&junk_bytes);
+
+    // Packet 2: Challenge (2-byte length prefix + RTP-wrapped challenge)
+    let mut challenge_rtp_state = crate::hidekey::stego::RtpSessionState::new();
+    let challenge_rtp_packet = challenge_rtp_state.pack(&challenge.to_bytes());
+    let mut packet2 = Vec::with_capacity(2 + challenge_rtp_packet.len());
+    packet2.extend_from_slice(&(challenge_rtp_packet.len() as u16).to_be_bytes());
+    packet2.extend_from_slice(&challenge_rtp_packet);
+
+    // Apply AmneziaWG padding and send via HTTP/2 DATA frames
+    let p1_padded = crate::hidekey::stego::amnezia_pad(&packet1);
+    let p2_padded = crate::hidekey::stego::amnezia_pad(&packet2);
+
+    if let Err(e) = h2_obfs::send_data(&mut boxed_stream, &p1_padded).await {
+        error!("❌ Hidekey: Failed to send Junk via H2 to {}: {}", server_addr, e);
+        return;
+    }
+    if let Err(e) = boxed_stream.flush().await {
+        error!("❌ Hidekey: flush after Junk failed: {}", e);
+        return;
+    }
+    tokio::time::sleep(crate::hidekey::stego::amnezia_jitter_delay()).await;
+    if let Err(e) = h2_obfs::send_data(&mut boxed_stream, &p2_padded).await {
+        error!("❌ Hidekey: Failed to send ClientChallenge via H2 to {}: {}", server_addr, e);
+        return;
+    }
+    if let Err(e) = boxed_stream.flush().await {
+        error!("❌ Hidekey: flush after ClientChallenge failed: {}", e);
         return;
     }
 
-    // Read server's random junk
-    let mut srv_junk_len_buf = [0u8; 2];
-    if let Err(e) = server_stream.read_exact(&mut srv_junk_len_buf).await {
-        error!("❌ Hidekey: Failed to read ServerJunkLen from {}: {}", server_addr, e);
-        return;
-    }
-    let srv_junk_len = u16::from_be_bytes(srv_junk_len_buf) as usize;
-    if srv_junk_len < 16 || srv_junk_len > 128 {
+    // Read server's junk frame via HTTP/2 DATA
+    let srv_junk_data = match h2_obfs::recv_data(&mut boxed_stream).await {
+        Ok(Some(d)) => d,
+        _ => { error!("❌ Hidekey: Failed to read ServerJunk from {}", server_addr); return; }
+    };
+    let srv_junk_len = if srv_junk_data.len() >= 2 {
+        u16::from_be_bytes([srv_junk_data[0], srv_junk_data[1]]) as usize
+    } else { 0 };
+    if srv_junk_len < 16 || srv_junk_len > 256 {
         error!("❌ Hidekey: Invalid ServerJunkLen received: {}", srv_junk_len);
         return;
     }
-    let mut srv_junk_bytes = vec![0u8; srv_junk_len];
-    if let Err(e) = server_stream.read_exact(&mut srv_junk_bytes).await {
-        error!("❌ Hidekey: Failed to read ServerJunk from {}: {}", server_addr, e);
+
+    // Read Server Response frame via HTTP/2 DATA
+    let srv_resp_data = match h2_obfs::recv_data(&mut boxed_stream).await {
+        Ok(Some(d)) => d,
+        _ => { error!("❌ Hidekey: Failed to read ServerResponse from {}", server_addr); return; }
+    };
+    if srv_resp_data.len() < 2 {
+        error!("❌ Hidekey: ServerResponse frame too short from {}", server_addr);
+        return;
+    }
+    let resp_len = u16::from_be_bytes([srv_resp_data[0], srv_resp_data[1]]) as usize;
+    if resp_len != 88 || srv_resp_data.len() < 2 + resp_len {
+        error!("❌ Hidekey: Invalid ServerResponseLen received: {}", resp_len);
+        return;
+    }
+    let resp_rtp = &srv_resp_data[2..2 + resp_len];
+
+    let resp_payload = match crate::hidekey::stego::unpack_rtp(resp_rtp) {
+        Some(p) => p,
+        None => {
+            error!("❌ Hidekey: Invalid RTP response packet from {}", server_addr);
+            return;
+        }
+    };
+
+    if resp_payload.len() != RESPONSE_SIZE {
+        error!("❌ Hidekey: Invalid unpacked response size from {} ({} bytes)", server_addr, resp_payload.len());
         return;
     }
 
     let mut resp_buf = [0u8; RESPONSE_SIZE];
-    if let Err(e) = server_stream.read_exact(&mut resp_buf).await {
-        error!("❌ Hidekey: Failed to read ServerResponse from {}: {}", server_addr, e);
-        return;
-    }
+    resp_buf.copy_from_slice(&resp_payload);
 
     let server_response = crate::hidekey::handshake::ServerResponse::from_bytes(&resp_buf);
     let session = match hs.process_response(&server_response) {
@@ -1175,57 +1629,316 @@ async fn handle_hidekey_connection(
         }
     };
 
-    if let Err(e) = server_stream.write_all(&target_wire).await {
+    if let Err(e) = h2_obfs::send_data(&mut boxed_stream, &target_wire).await {
         error!("❌ Hidekey: Failed to send proxy target frame: {}", e);
         return;
     }
+    if let Err(e) = boxed_stream.flush().await {
+        error!("❌ Hidekey: flush after proxy target failed: {}", e);
+        return;
+    }
 
-    debug!("⚡ Hidekey relay started: {}:{} via {}", dest_ip, port, server_addr);
+    debug!("⚡ Hidekey H2 relay started: {}:{} via {}", dest_ip, port, server_addr);
 
-    // ── 5. Bidirectional relay with Hidekey framing ───────────────────────────
+    // ── 5. Bidirectional relay: TUN ↔ TLS+HTTP/2 ─────────────────────────────
+    //
+    // The boxed TLS stream cannot be split into owned halves, so we use two
+    // mpsc channels to decouple the two directions and run them concurrently
+    // inside a single task via select!.
+    //
+    // Channel layout:
+    //   tun_reader  →  [upload_tx]  →  upload loop  →  h2 send
+    //   h2 recv     →  [download_tx] → download loop → tun_writer
+    //
+    // Both loops run inside one tokio::select! so they share the boxed stream
+    // without needing to split it, but each direction is driven independently.
+
     let (mut tun_reader, mut tun_writer) = tokio::io::split(tun_stream);
-    let (mut server_reader, mut server_writer) = server_stream.into_split();
 
-    // TUN → Server: read raw bytes from TUN, encrypt with tx_cipher, send framed
-    let upload = tokio::spawn(async move {
-        let mut buf = vec![0u8; 16384];
+    // Upload channel: TUN bytes → encrypt → H2 send
+    let (upload_tx, mut upload_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+
+    // Spawn TUN reader task — reads raw bytes from TUN and sends to channel
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 16384]; // 16KB — safe chunk size
         loop {
+            use tokio::io::AsyncReadExt;
+            match tun_reader.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if upload_tx.send(buf[..n].to_vec()).await.is_err() { break; }
+                }
+            }
+        }
+    });
+
+    // Main relay loop: drives both directions on the single boxed stream
+    loop {
+        tokio::select! {
+            // TUN → Сервер: батчинг чанков (до 32 пакетов за раз) + одно шифрование + один flush
+            maybe_chunk = upload_rx.recv() => {
+                match maybe_chunk {
+                    None => break,
+                    Some(chunk) => {
+                        let mut batch = chunk;
+                        let mut count = 1;
+                        while count < 32 {
+                            match upload_rx.try_recv() {
+                                Ok(next_chunk) => {
+                                    batch.extend_from_slice(&next_chunk);
+                                    count += 1;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+
+                        let wire = match tx_cipher.seal(&batch) {
+                            Ok(w) => w,
+                            Err(e) => { warn!("Hidekey H2 upload seal failed: {}", e); break; }
+                        };
+                        if h2_obfs::send_data(&mut boxed_stream, &wire).await.is_err() { break; }
+                        if boxed_stream.flush().await.is_err() { break; }
+                    }
+                }
+            }
+            // Server → TUN: receive H2 DATA, decrypt, write to TUN
+            h2_result = h2_obfs::recv_data(&mut boxed_stream) => {
+                match h2_result {
+                    Ok(Some(data)) => {
+                        if data.len() < 2 { 
+                            warn!("H2 recv: payload too short ({} bytes)", data.len());
+                            break; 
+                        }
+                        let flen = u16::from_be_bytes([data[0], data[1]]) as usize;
+                        if data.len() < 2 + flen { 
+                            warn!("H2 recv: payload truncated: data.len()={} flen={}", data.len(), flen);
+                            break; 
+                        }
+                        let rtp = &data[2..2 + flen];
+                        let plaintext = match rx_cipher.open(rtp) {
+                            Some(p) => p,
+                            None => { 
+                                warn!("Hidekey H2 download decrypt failed — closing (counter={}, flen={}, rtp_len={})", 
+                                    rx_cipher.counter, flen, rtp.len());
+                                break; 
+                            }
+                        };
+                        use tokio::io::AsyncWriteExt;
+                        if tun_writer.write_all(&plaintext).await.is_err() { break; }
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+
+    debug!("✅ Hidekey H2 relay closed: {}:{}", dest_ip, port);
+}
+
+// ── Hidekey UDP client handler ────────────────────────────────────────────────
+//
+// Called when transport=udp is configured.
+// Performs the Hidekey handshake over UDP, then relays TUN traffic
+// bidirectionally through the obfuscated UDP channel.
+
+async fn handle_hidekey_udp(
+    tun_stream: netstack_smoltcp::TcpStream,
+    master_key: [u8; 32],
+    dest_ip: std::net::IpAddr,
+    port: u16,
+    config: Arc<Config>,
+) {
+    use std::sync::Arc;
+    use crate::hidekey::udp_obfs::{
+        self, UdpSessionCounter,
+        DIR_CLIENT_TO_SERVER, DIR_SERVER_TO_CLIENT, MAX_UDP_PAYLOAD,
+    };
+    use crate::hidekey::handshake::{ClientHandshake, ServerResponse, RESPONSE_SIZE};
+    use crate::hidekey::crypto::derive_blake3_key;
+
+    let server_addr = format!("{}:{}", config.remote_outbound_address, config.server_listen_port);
+
+    // ── 1. Resolve server address ─────────────────────────────────────────────
+    let resolved: std::net::SocketAddr = match tokio::net::lookup_host(&server_addr).await {
+        Ok(mut a) => match a.next() {
+            Some(addr) => addr,
+            None => { error!("❌ Hidekey UDP: DNS no addresses for {}", server_addr); return; }
+        },
+        Err(e) => { error!("❌ Hidekey UDP: DNS failed for {}: {}", server_addr, e); return; }
+    };
+
+    // ── 2. Bind a local UDP socket ────────────────────────────────────────────
+    let bind_addr = if resolved.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+    let udp_sock = match tokio::net::UdpSocket::bind(bind_addr).await {
+        Ok(s) => Arc::new(s),
+        Err(e) => { error!("❌ Hidekey UDP: bind failed: {}", e); return; }
+    };
+
+    // ── 3. Derive keys ────────────────────────────────────────────────────────
+    let xor_key = udp_obfs::derive_header_xor_key(&master_key);
+    // Pre-session keys (used only for the handshake exchange)
+    let pre_tx_key = derive_blake3_key("hidekey-udp-pre-session-tx", &master_key);
+    let pre_rx_key = derive_blake3_key("hidekey-udp-pre-session-rx", &master_key);
+
+    // ── 4. Send ClientChallenge ───────────────────────────────────────────────
+    let hs = ClientHandshake::new(master_key);
+    let challenge = hs.build_challenge();
+    let challenge_bytes = challenge.to_bytes();
+
+    let mut out_buf = [0u8; MAX_UDP_PAYLOAD];
+    let n = match udp_obfs::encode_packet(
+        &challenge_bytes,
+        0, // packet_id = 0 for handshake
+        DIR_CLIENT_TO_SERVER,
+        &pre_tx_key,
+        &xor_key,
+        &mut out_buf,
+    ) {
+        Ok(n) => n,
+        Err(e) => { error!("❌ Hidekey UDP: encode challenge failed: {}", e); return; }
+    };
+
+    if let Err(e) = udp_sock.send_to(&out_buf[..n], resolved).await {
+        error!("❌ Hidekey UDP: send challenge to {} failed: {}", server_addr, e);
+        return;
+    }
+    debug!("→ Hidekey UDP: ClientChallenge sent to {}", server_addr);
+
+    // ── 5. Receive ServerResponse (with 10s timeout) ──────────────────────────
+    let mut recv_buf = [0u8; MAX_UDP_PAYLOAD];
+    let recv_result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        udp_sock.recv_from(&mut recv_buf),
+    ).await;
+
+    let (rn, from_addr) = match recv_result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => { error!("❌ Hidekey UDP: recv ServerResponse failed: {}", e); return; }
+        Err(_) => { error!("❌ Hidekey UDP: ServerResponse timeout (10s) from {}", server_addr); return; }
+    };
+
+    if from_addr.ip() != resolved.ip() {
+        warn!("⚠️ Hidekey UDP: ServerResponse from unexpected IP {} (expected {})", from_addr, resolved);
+        return;
+    }
+
+    let decoded = match udp_obfs::decode_packet(
+        &recv_buf[..rn],
+        DIR_SERVER_TO_CLIENT,
+        &pre_rx_key,
+        &xor_key,
+    ) {
+        Ok(d) => d,
+        Err(e) => { error!("❌ Hidekey UDP: decode ServerResponse failed: {}", e); return; }
+    };
+
+    if decoded.payload.len() != RESPONSE_SIZE {
+        error!("❌ Hidekey UDP: ServerResponse wrong size {} (expected {})", decoded.payload.len(), RESPONSE_SIZE);
+        return;
+    }
+
+    let mut resp_buf = [0u8; RESPONSE_SIZE];
+    resp_buf.copy_from_slice(&decoded.payload);
+    let server_response = ServerResponse::from_bytes(&resp_buf);
+
+    let session = match hs.process_response(&server_response) {
+        Some(s) => s,
+        None => { error!("❌ Hidekey UDP: ServerResponse MAC failed — wrong key or MITM!"); return; }
+    };
+
+    debug!("✅ Hidekey UDP: Handshake OK with {} → {}:{}", server_addr, dest_ip, port);
+
+    // ── 6. Send proxy target (first data packet) ──────────────────────────────
+    // Format: CMD(0x01) + PORT(2 BE) + ATYP(1) + ADDR(N)
+    let mut target_frame = Vec::new();
+    target_frame.push(0x01); // CMD = TCP CONNECT
+    target_frame.extend_from_slice(&port.to_be_bytes());
+    match dest_ip {
+        std::net::IpAddr::V4(ipv4) => {
+            target_frame.push(0x01);
+            target_frame.extend_from_slice(&ipv4.octets());
+        }
+        std::net::IpAddr::V6(ipv6) => {
+            target_frame.push(0x04);
+            target_frame.extend_from_slice(&ipv6.octets());
+        }
+    }
+
+    let mut tx_counter = UdpSessionCounter::new();
+    let tx_id = tx_counter.next_tx_id();
+
+    let n = match udp_obfs::encode_packet(
+        &target_frame,
+        tx_id,
+        DIR_CLIENT_TO_SERVER,
+        &session.tx_key,
+        &xor_key,
+        &mut out_buf,
+    ) {
+        Ok(n) => n,
+        Err(e) => { error!("❌ Hidekey UDP: encode target frame failed: {}", e); return; }
+    };
+
+    if let Err(e) = udp_sock.send_to(&out_buf[..n], resolved).await {
+        error!("❌ Hidekey UDP: send target frame failed: {}", e);
+        return;
+    }
+
+    // ── 7. Bidirectional relay: TUN ↔ UDP ─────────────────────────────────────
+    let udp_sock = Arc::new(udp_sock);
+    let (mut tun_reader, mut tun_writer) = tokio::io::split(tun_stream);
+
+    let tx_key = session.tx_key;
+    let rx_key = session.rx_key;
+    let sock_send = Arc::clone(&udp_sock);
+    let sock_recv = Arc::clone(&udp_sock);
+
+    // TUN → UDP (client sends data to server)
+    let tun_to_udp = async move {
+        let mut buf = [0u8; 8192];
+        let mut out = [0u8; MAX_UDP_PAYLOAD];
+        let mut counter = tx_counter;
+        loop {
+            use tokio::io::AsyncReadExt;
             let n = match tun_reader.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            let wire = match tx_cipher.seal(&buf[..n]) {
-                Ok(w) => w,
-                Err(e) => { warn!("Hidekey upload seal failed: {}", e); break; }
-            };
-            if server_writer.write_all(&wire).await.is_err() { break; }
+            let id = counter.next_tx_id();
+            match udp_obfs::encode_packet(&buf[..n], id, DIR_CLIENT_TO_SERVER, &tx_key, &xor_key, &mut out) {
+                Ok(pkt_len) => {
+                    if sock_send.send_to(&out[..pkt_len], resolved).await.is_err() { break; }
+                }
+                Err(e) => { warn!("Hidekey UDP encode error: {}", e); }
+            }
         }
-    });
+    };
 
-    // Server → TUN: read framed packets from server, decrypt with rx_cipher, forward to TUN
-    let download = tokio::spawn(async move {
+    // UDP → TUN (server sends data to client)
+    let udp_to_tun = async move {
+        let mut buf = [0u8; MAX_UDP_PAYLOAD];
+        let mut rx_counter = UdpSessionCounter::new();
         loop {
-            // Inline length-prefixed frame read (explicit Vec<u8> fixes Rust 1.87 Linux type inference)
-            let frame: Vec<u8> = {
-                let mut len_buf = [0u8; 2];
-                if server_reader.read_exact(&mut len_buf).await.is_err() { break; }
-                let flen = u16::from_be_bytes(len_buf) as usize;
-                if flen == 0 { break; }
-                let mut fbuf = vec![0u8; flen];
-                if server_reader.read_exact(&mut fbuf).await.is_err() { break; }
-                fbuf
+            let n = match sock_recv.recv(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => { debug!("Hidekey UDP recv error: {}", e); break; }
             };
-            let plaintext = match rx_cipher.open(&frame) {
-                Some(p) => p,
-                None => { warn!("Hidekey download decrypt failed — closing"); break; }
-            };
-            if tun_writer.write_all(&plaintext).await.is_err() { break; }
+            match udp_obfs::decode_packet(&buf[..n], DIR_SERVER_TO_CLIENT, &rx_key, &xor_key) {
+                Ok(decoded) => {
+                    if !rx_counter.accept_rx(decoded.packet_id) {
+                        debug!("Hidekey UDP: replay/reorder dropped (id={})", decoded.packet_id);
+                        continue;
+                    }
+                    use tokio::io::AsyncWriteExt;
+                    if tun_writer.write_all(&decoded.payload).await.is_err() { break; }
+                }
+                Err(e) => { debug!("Hidekey UDP decode error: {}", e); }
+            }
         }
-    });
+    };
 
-
-    tokio::join!(upload, download);
-    debug!("✅ Hidekey relay closed: {}:{}", dest_ip, port);
+    tokio::join!(tun_to_udp, udp_to_tun);
+    debug!("✅ Hidekey UDP relay closed: {}:{}", dest_ip, port);
 }
 
 // ── Helper: base64-decode a standard or URL-safe base64 string into 32 bytes ─

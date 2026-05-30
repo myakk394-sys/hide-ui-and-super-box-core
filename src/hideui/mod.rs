@@ -158,7 +158,7 @@ impl HideUiServer {
     pub fn new(
         db_path:        &str,
         server_address: String,
-        server_port:    u16,
+        _server_port:   u16,
         listen_address: String,
         listen_port:    u16,
         stats:          Arc<crate::stats::ProxyStats>,
@@ -216,8 +216,13 @@ impl HideUiServer {
             None    => { db.save_setting("panel_port", &listen_port.to_string())?; listen_port },
         };
 
+        let resolved_server_port = match db.get_setting("server_listen_port")? {
+            Some(p) => p.parse::<u16>().unwrap_or(51443),
+            None    => { db.save_setting("server_listen_port", "51443")?; 51443 },
+        };
+
         let state = Arc::new(AppState {
-            db, peers, metrics, server_address, server_port, stats,
+            db, peers, metrics, server_address, server_port: resolved_server_port, stats,
             last_cpu_time:      std::sync::Mutex::new(None),
             last_traffic_speed: std::sync::Mutex::new((0, 0, std::time::Instant::now())),
         });
@@ -229,6 +234,21 @@ impl HideUiServer {
     }
 
     pub fn get_state(&self) -> Arc<AppState> { Arc::clone(&self.state) }
+
+    /// Returns the VPN server listen port stored in DB (falls back to 51443).
+    pub fn get_server_listen_port(&self) -> u16 {
+        self.state.db
+            .get_setting("server_listen_port")
+            .unwrap_or(None)
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(51443)
+    }
+
+    /// Returns the TLS certificate PEM bytes (for sharing with Hidekey server).
+    pub fn get_cert_pem(&self) -> Vec<u8> { self.tls_cert_pem.clone() }
+
+    /// Returns the TLS private key PEM bytes (for sharing with Hidekey server).
+    pub fn get_key_pem(&self) -> Vec<u8> { self.tls_key_pem.clone() }
 
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr        = format!("{}:{}", self.listen_address, self.listen_port);

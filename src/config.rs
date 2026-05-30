@@ -108,6 +108,9 @@ pub enum TransportType {
     H2,
     /// gRPC tunneling.
     Grpc,
+    /// Hidekey UDP obfuscation transport (XOR header + ChaCha20 + padding).
+    /// Use with hidekey:// URIs. Falls back to TCP when UDP is blocked.
+    Udp,
 }
 
 impl fmt::Display for TransportType {
@@ -117,6 +120,7 @@ impl fmt::Display for TransportType {
             TransportType::Ws => write!(f, "ws"),
             TransportType::H2 => write!(f, "h2"),
             TransportType::Grpc => write!(f, "grpc"),
+            TransportType::Udp => write!(f, "udp"),
         }
     }
 }
@@ -130,6 +134,7 @@ impl FromStr for TransportType {
             "ws" | "websocket" => Ok(TransportType::Ws),
             "h2" | "http" => Ok(TransportType::H2),
             "grpc" => Ok(TransportType::Grpc),
+            "udp" => Ok(TransportType::Udp),
             other => Err(ConfigError::InvalidParameter {
                 key: "type".into(),
                 reason: format!("unknown transport type \"{other}\""),
@@ -352,13 +357,36 @@ impl Config {
             return Err(ConfigError::InvalidScheme(parsed.scheme().to_owned()));
         }
 
-        // ── Step 3: Extract UUID from userinfo ───────────────────────
+        // ── Step 3: Extract UUID and Master Key from userinfo ─────────
         let uuid_str = parsed.username();
         if uuid_str.is_empty() {
             return Err(ConfigError::MissingUuid);
         }
-        let vless_uuid = Uuid::parse_str(uuid_str)?;
-        let hidekey_master_key = parsed.password().map(|p| p.to_owned());
+
+        let hidekey_master_key = if parsed.scheme() == "hidekey" {
+            if parsed.password().is_some() {
+                parsed.password().map(|p| p.to_owned())
+            } else {
+                Some(uuid_str.to_owned())
+            }
+        } else {
+            parsed.password().map(|p| p.to_owned())
+        };
+
+        let vless_uuid = if parsed.scheme() == "hidekey" && parsed.password().is_none() {
+            Uuid::nil()
+        } else {
+            match Uuid::parse_str(uuid_str) {
+                Ok(u) => u,
+                Err(e) => {
+                    if parsed.scheme() == "hidekey" {
+                        Uuid::nil()
+                    } else {
+                        return Err(ConfigError::InvalidUuid(e));
+                    }
+                }
+            }
+        };
 
         // ── Step 4: Extract host and port ────────────────────────────
         let host = parsed
@@ -634,8 +662,8 @@ impl Config {
         // TLS and REALITY benefit from SNI — warn-level only, not an error
         // (validated at connection time instead)
 
-        // Validate that the UUID is not the nil UUID
-        if self.vless_uuid.is_nil() {
+        // Validate that the UUID is not the nil UUID (only for standard VLESS)
+        if self.hidekey_master_key.is_none() && self.vless_uuid.is_nil() {
             return Err(ConfigError::InvalidParameter {
                 key: "uuid".into(),
                 reason: "VLESS UUID must not be nil (all zeros)".into(),

@@ -31,8 +31,20 @@
 pub mod config;
 pub mod inbound;
 pub mod outbound;
+pub mod outbound_udp;
 pub mod stats;
 pub mod tls13;
 pub mod tun_device;
 pub mod hidekey;
 pub mod hideui;
+
+/// Android JNI entry points — compiled only when targeting Android.
+/// The source lives in `android/jni_wrapper.rs` and is included here
+/// so it can access all private crate internals (config, inbound, etc.).
+#[cfg(target_os = "android")]
+#[path = "../android/jni_wrapper.rs"]
+pub mod android;
+
+/// C-compatible API bindings — compiled on non-Android UNIX targets (such as iOS or Linux) for C integration.
+#[cfg(all(target_family = "unix", not(target_os = "android")))]
+pub mod c_api;

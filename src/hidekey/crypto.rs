@@ -1,7 +1,6 @@
 use rand::rngs::OsRng;
 use x25519_dalek::{StaticSecret, PublicKey};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
-use chacha20poly1305::aead::{Aead, KeyInit};
+use ring::aead::{LessSafeKey, UnboundKey, CHACHA20_POLY1305, Nonce, Aad};
 
 /// Derives a 32-byte key from key material using BLAKE3 in KDF mode.
 pub fn derive_blake3_key(context: &str, key_material: &[u8]) -> [u8; 32] {
@@ -45,17 +44,20 @@ pub fn encrypt_chacha20poly1305(
     nonce: &[u8; 12],
     plaintext: &[u8],
     associated_data: &[u8],
-) -> Result<Vec<u8>, chacha20poly1305::Error> {
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    let nonce_val = Nonce::from_slice(nonce);
+) -> Result<Vec<u8>, String> {
+    let unbound = UnboundKey::new(&CHACHA20_POLY1305, key)
+        .map_err(|_| "Failed to create ChaCha20 key".to_string())?;
+    let safe_key = LessSafeKey::new(unbound);
     
-    cipher.encrypt(
-        nonce_val,
-        chacha20poly1305::aead::Payload {
-            msg: plaintext,
-            aad: associated_data,
-        },
-    )
+    let mut in_out = plaintext.to_vec();
+    let nonce_val = Nonce::assume_unique_for_key(*nonce);
+    let aad = Aad::from(associated_data);
+    
+    let tag = safe_key.seal_in_place_separate_tag(nonce_val, aad, &mut in_out)
+        .map_err(|_| "ChaCha20 encryption failed".to_string())?;
+        
+    in_out.extend_from_slice(tag.as_ref());
+    Ok(in_out)
 }
 
 /// Decrypts ciphertext using ChaCha20Poly1305.
@@ -64,15 +66,20 @@ pub fn decrypt_chacha20poly1305(
     nonce: &[u8; 12],
     ciphertext: &[u8],
     associated_data: &[u8],
-) -> Result<Vec<u8>, chacha20poly1305::Error> {
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    let nonce_val = Nonce::from_slice(nonce);
+) -> Result<Vec<u8>, String> {
+    if ciphertext.len() < 16 {
+        return Err("Ciphertext too short".to_string());
+    }
+    let unbound = UnboundKey::new(&CHACHA20_POLY1305, key)
+        .map_err(|_| "Failed to create ChaCha20 key".to_string())?;
+    let safe_key = LessSafeKey::new(unbound);
     
-    cipher.decrypt(
-        nonce_val,
-        chacha20poly1305::aead::Payload {
-            msg: ciphertext,
-            aad: associated_data,
-        },
-    )
+    let mut in_out = ciphertext.to_vec();
+    let nonce_val = Nonce::assume_unique_for_key(*nonce);
+    let aad = Aad::from(associated_data);
+    
+    let plaintext_slice = safe_key.open_in_place(nonce_val, aad, &mut in_out)
+        .map_err(|_| "ChaCha20 decryption failed".to_string())?;
+        
+    Ok(plaintext_slice.to_vec())
 }

@@ -1,7 +1,7 @@
 use std::env;
 use std::process;
 use std::sync::Arc;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
 use super_box::config::Config;
@@ -51,11 +51,27 @@ async fn main() {
         file: std::sync::Arc::new(std::sync::Mutex::new(log_file)),
     };
 
+    let filter_str = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+
     // Initialize standard clean log output via tracing-subscriber
     fmt()
-        .with_env_filter(EnvFilter::new("info"))
+        .with_env_filter(EnvFilter::new(filter_str))
         .with_writer(writer)
         .init();
+
+    // CPU Affinity: pin the main Tokio runtime thread to a specific CPU core (core 0)
+    if let Some(core_ids) = core_affinity::get_core_ids() {
+        if !core_ids.is_empty() {
+            let core_id = core_ids[0];
+            if core_affinity::set_for_current(core_id) {
+                info!("📌 CPU Affinity: Main Tokio thread successfully pinned to Core {}", core_id.id);
+            } else {
+                warn!("⚠️ CPU Affinity: Failed to pin main thread to Core {}", core_id.id);
+            }
+        }
+    }
+
+
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -92,6 +108,23 @@ async fn main() {
         db.save_setting("panel_port", port_str).expect("Failed to save panel port");
         let _ = db.sync_panel_conf();
         println!("✅ Web panel port updated successfully to {}", port_str);
+        return;
+    }
+
+    if mode_arg == "set-server-port" {
+        if args.len() < 3 {
+            eprintln!("❌ Usage: super_box set-server-port <port>");
+            process::exit(1);
+        }
+        let port_str = &args[2];
+        if port_str.parse::<u16>().is_err() {
+            eprintln!("❌ Invalid port number");
+            process::exit(1);
+        }
+        let db = super_box::hideui::db::HideDb::open("super_box.db").expect("Failed to open DB");
+        db.save_setting("server_listen_port", port_str).expect("Failed to save server port");
+        let _ = db.sync_panel_conf();
+        println!("✅ VPN server listen port updated successfully to {}", port_str);
         return;
     }
 
@@ -159,12 +192,37 @@ async fn main() {
         
         info!("🌍 Resolved Public IP for client connections: {}", public_ip);
 
+        let stats = Arc::new(super_box::stats::ProxyStats::new());
+
+        // 1. Initialize Hide-UI Panel — opens DB once, reads all settings from it.
+        info!("🔧 Initializing Hide-UI Panel on port 8082...");
+        let ui_server = match super_box::hideui::HideUiServer::new(
+            "super_box.db",
+            public_ip.clone(),
+            8443, // placeholder — real port read below from DB
+            "0.0.0.0".to_string(),
+            8082,
+            Arc::clone(&stats),
+        ) {
+            Ok(srv) => srv,
+            Err(e) => {
+                error!("❌ Failed to initialize Hide-UI Panel database: {}", e);
+                process::exit(1);
+            }
+        };
+
+        // Read VPN listen port from the already-open DB inside HideUiServer.
+        // This avoids opening sled a second time (which causes lock contention
+        // on fast systemd restarts — os error 11 / EWOULDBLOCK).
+        let server_port = ui_server.get_server_listen_port();
+        info!("📡 VPN Server will listen on port: {}", server_port);
+
         let server_config = Config {
             profile_name: "HidekeyServer".to_string(),
-            vless_uuid: uuid::Uuid::new_v4(), // Dummy UUID for server mode representation
+            vless_uuid: uuid::Uuid::new_v4(),
             local_inbound_port: 1080,
             remote_outbound_address: public_ip,
-            server_listen_port: 8443,
+            server_listen_port: server_port,
             security: super_box::config::SecurityType::None,
             transport: super_box::config::TransportType::Tcp,
             reality_public_key: None,
@@ -182,27 +240,10 @@ async fn main() {
         };
 
         let config_arc = Arc::new(server_config);
-        
-        let stats = Arc::new(super_box::stats::ProxyStats::new());
-
-        // 1. Initialize and run Hide-UI Panel on port 8082
-        info!("🔧 Initializing Hide-UI Panel on port 8082...");
-        let ui_server = match super_box::hideui::HideUiServer::new(
-            "super_box.db",
-            config_arc.remote_outbound_address.clone(),
-            config_arc.server_listen_port,
-            "0.0.0.0".to_string(),
-            8082,
-            Arc::clone(&stats),
-        ) {
-            Ok(srv) => srv,
-            Err(e) => {
-                error!("❌ Failed to initialize Hide-UI Panel database: {}", e);
-                process::exit(1);
-            }
-        };
 
         let peers_arc = ui_server.get_state().peers.clone();
+        let cert_pem  = ui_server.get_cert_pem();
+        let key_pem   = ui_server.get_key_pem();
 
         if let Err(e) = ui_server.run().await {
             error!("❌ Failed to run Hide-UI Panel: {}", e);
@@ -214,7 +255,7 @@ async fn main() {
         info!("📡 Starting remote tunnel listener on port {}...", config_arc.server_listen_port);
         let config_rwlock = Arc::new(std::sync::RwLock::new((*config_arc).clone()));
         
-        if let Err(e) = super_box::outbound::start_outbound_server(config_rwlock, peers_arc, stats).await {
+        if let Err(e) = super_box::outbound::start_outbound_server(config_rwlock, peers_arc, stats, cert_pem, key_pem).await {
             error!("❌ Remote tunnel listener crashed: {}", e);
             process::exit(1);
         }

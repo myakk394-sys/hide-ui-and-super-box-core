@@ -2,6 +2,62 @@ use rand::Rng;
 
 pub const RTP_HEADER_SIZE: usize = 12;
 
+// ── AmneziaWG-style obfuscation parameters ────────────────────────────────────
+//
+// Jmin/Jmax: random padding appended to each Hidekey frame payload.
+// Mimics AmneziaWG's Jc/Jmin/Jmax junk-packet strategy but applied at the
+// payload level rather than the packet level.
+//
+// Bucket sizes: we snap outgoing frame sizes to the nearest "typical" HTTP/2
+// DATA frame size so traffic analysis cannot infer payload sizes.
+
+/// Minimum random padding bytes added to each frame (AmneziaWG Jmin analogue).
+pub const AMNEZIA_JMIN: usize = 0;
+/// Maximum random padding bytes added to each frame (AmneziaWG Jmax analogue).
+pub const AMNEZIA_JMAX: usize = 64;
+
+/// Typical HTTP/2 DATA frame payload sizes used for size bucketing.
+/// Outgoing frames are padded to the next bucket ≥ actual payload size.
+const SIZE_BUCKETS: &[usize] = &[128, 256, 512, 1024, 1460, 4096, 8192, 16384];
+
+/// Adds random padding to `data` so its length snaps to the next size bucket.
+///
+/// The padding bytes are random (high entropy) so they are indistinguishable
+/// from encrypted payload to a passive observer.  The receiver strips padding
+/// using the 2-byte length prefix that already exists in the Hidekey framing.
+pub fn amnezia_pad(data: &[u8]) -> Vec<u8> {
+    let mut rng = rand::thread_rng();
+
+    // Step 1: add Jmin..Jmax random bytes
+    let jitter: usize = rng.gen_range(AMNEZIA_JMIN..=AMNEZIA_JMAX);
+    let padded_len = data.len() + jitter;
+
+    // Step 2: snap to next size bucket
+    let target_len = SIZE_BUCKETS
+        .iter()
+        .find(|&&b| b >= padded_len)
+        .copied()
+        .unwrap_or(padded_len); // if larger than all buckets, keep as-is
+
+    let mut out = Vec::with_capacity(target_len);
+    out.extend_from_slice(data);
+    // Fill remainder with random bytes
+    let pad_total = target_len.saturating_sub(data.len());
+    let mut pad = vec![0u8; pad_total];
+    rng.fill(pad.as_mut_slice());
+    out.extend_from_slice(&pad);
+    out
+}
+
+/// Returns a random timing jitter duration in the range 0..=5 ms.
+///
+/// Insert this delay between consecutive outgoing frames to prevent
+/// statistical traffic-analysis attacks (à la AmneziaWG timing jitter).
+pub fn amnezia_jitter_delay() -> tokio::time::Duration {
+    let ms = rand::thread_rng().gen_range(0u64..=5);
+    tokio::time::Duration::from_millis(ms)
+}
+
 /// Structure representing a standard RTP v2 Header (RFC 3550)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RtpHeader {

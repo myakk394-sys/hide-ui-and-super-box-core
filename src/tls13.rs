@@ -1,8 +1,7 @@
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256, Sha384};
-use aes_gcm::{Aes128Gcm, KeyInit};
-use aes_gcm::aead::{AeadInPlace};
 use thiserror::Error;
+use ring::aead::{LessSafeKey, UnboundKey, AES_128_GCM, AES_256_GCM, CHACHA20_POLY1305, Nonce, Aad};
 
 #[derive(Error, Debug)]
 pub enum TlsError {
@@ -126,9 +125,9 @@ impl Tls13State {
 }
 
 pub enum TlsCipher {
-    Aes128Gcm(Aes128Gcm),
-    Aes256Gcm(aes_gcm::Aes256Gcm),
-    ChaCha20(chacha20poly1305::ChaCha20Poly1305),
+    Aes128Gcm(LessSafeKey),
+    Aes256Gcm(LessSafeKey),
+    ChaCha20(LessSafeKey),
 }
 
 impl TlsCipher {
@@ -138,15 +137,21 @@ impl TlsCipher {
         match cipher_suite {
             0x1301 => {
                 let key = derive_key(secret, is_384, 16);
-                Ok((TlsCipher::Aes128Gcm(Aes128Gcm::new_from_slice(&key).unwrap()), iv))
+                let unbound = UnboundKey::new(&AES_128_GCM, &key)
+                    .map_err(|_| TlsError::CryptoError("Failed to create AES-128 key".into()))?;
+                Ok((TlsCipher::Aes128Gcm(LessSafeKey::new(unbound)), iv))
             }
             0x1302 => {
                 let key = derive_key(secret, is_384, 32);
-                Ok((TlsCipher::Aes256Gcm(aes_gcm::Aes256Gcm::new_from_slice(&key).unwrap()), iv))
+                let unbound = UnboundKey::new(&AES_256_GCM, &key)
+                    .map_err(|_| TlsError::CryptoError("Failed to create AES-256 key".into()))?;
+                Ok((TlsCipher::Aes256Gcm(LessSafeKey::new(unbound)), iv))
             }
             0x1303 => {
                 let key = derive_key(secret, is_384, 32);
-                Ok((TlsCipher::ChaCha20(chacha20poly1305::ChaCha20Poly1305::new_from_slice(&key).unwrap()), iv))
+                let unbound = UnboundKey::new(&CHACHA20_POLY1305, &key)
+                    .map_err(|_| TlsError::CryptoError("Failed to create ChaCha20 key".into()))?;
+                Ok((TlsCipher::ChaCha20(LessSafeKey::new(unbound)), iv))
             }
             _ => Err(TlsError::CryptoError(format!("Unsupported cipher suite: 0x{:04x}", cipher_suite))),
         }
@@ -181,36 +186,32 @@ impl ZeroCopyTlsEncrypter {
         payload[4] = (record_payload_len & 0xff) as u8;
 
         let (header, rest) = payload.split_at_mut(5);
-        let aad = &*header;
+        let aad = Aad::from(&*header);
 
         let mut nonce_bytes = self.iv;
         let seq_bytes = self.seq.to_be_bytes();
         for i in 0..8 {
             nonce_bytes[4 + i] ^= seq_bytes[i];
         }
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
         let plaintext_slice = &mut rest[0..content_len];
         
-        match &self.cipher {
+        let tag = match &self.cipher {
             TlsCipher::Aes128Gcm(c) => {
-                let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
-                let tag = c.encrypt_in_place_detached(nonce, aad, plaintext_slice)
-                    .map_err(|e| TlsError::CryptoError(format!("Encryption failed: {:?}", e)))?;
-                rest[content_len..content_len + 16].copy_from_slice(&tag);
+                c.seal_in_place_separate_tag(nonce, aad, plaintext_slice)
+                    .map_err(|e| TlsError::CryptoError(format!("Encryption failed: {:?}", e)))?
             }
             TlsCipher::Aes256Gcm(c) => {
-                let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
-                let tag = c.encrypt_in_place_detached(nonce, aad, plaintext_slice)
-                    .map_err(|e| TlsError::CryptoError(format!("Encryption failed: {:?}", e)))?;
-                rest[content_len..content_len + 16].copy_from_slice(&tag);
+                c.seal_in_place_separate_tag(nonce, aad, plaintext_slice)
+                    .map_err(|e| TlsError::CryptoError(format!("Encryption failed: {:?}", e)))?
             }
             TlsCipher::ChaCha20(c) => {
-                let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
-                let tag = c.encrypt_in_place_detached(nonce, aad, plaintext_slice)
-                    .map_err(|e| TlsError::CryptoError(format!("Encryption failed: {:?}", e)))?;
-                rest[content_len..content_len + 16].copy_from_slice(&tag);
+                c.seal_in_place_separate_tag(nonce, aad, plaintext_slice)
+                    .map_err(|e| TlsError::CryptoError(format!("Encryption failed: {:?}", e)))?
             }
-        }
+        };
+        rest[content_len..content_len + 16].copy_from_slice(tag.as_ref());
 
         self.seq += 1;
         Ok(header_len + record_payload_len)
@@ -233,43 +234,33 @@ impl ZeroCopyTlsDecrypter {
         if record.len() < 5 + 16 {
             return Err(TlsError::InvalidRecord);
         }
-        
-        let tag_len = 16;
         let (header, rest) = record.split_at_mut(5);
-        let aad = &*header;
-        let ciphertext_len = rest.len() - tag_len;
+        let aad = Aad::from(&*header);
 
         let mut nonce_bytes = self.iv;
         let seq_bytes = self.seq.to_be_bytes();
         for i in 0..8 {
             nonce_bytes[4 + i] ^= seq_bytes[i];
         }
-
-        let (ciphertext, tag_slice) = rest.split_at_mut(ciphertext_len);
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
         
-        match &self.cipher {
+        let plaintext_slice = match &self.cipher {
             TlsCipher::Aes128Gcm(c) => {
-                let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
-                let tag = aes_gcm::aead::Tag::<Aes128Gcm>::clone_from_slice(tag_slice);
-                c.decrypt_in_place_detached(nonce, aad, ciphertext, &tag)
-                    .map_err(|e| TlsError::CryptoError(format!("Decryption failed: {:?}", e)))?;
+                c.open_in_place(nonce, aad, rest)
+                    .map_err(|e| TlsError::CryptoError(format!("Decryption failed: {:?}", e)))?
             }
             TlsCipher::Aes256Gcm(c) => {
-                let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
-                let tag = aes_gcm::aead::Tag::<aes_gcm::Aes256Gcm>::clone_from_slice(tag_slice);
-                c.decrypt_in_place_detached(nonce, aad, ciphertext, &tag)
-                    .map_err(|e| TlsError::CryptoError(format!("Decryption failed: {:?}", e)))?;
+                c.open_in_place(nonce, aad, rest)
+                    .map_err(|e| TlsError::CryptoError(format!("Decryption failed: {:?}", e)))?
             }
             TlsCipher::ChaCha20(c) => {
-                let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
-                let tag = chacha20poly1305::aead::Tag::<chacha20poly1305::ChaCha20Poly1305>::clone_from_slice(tag_slice);
-                c.decrypt_in_place_detached(nonce, aad, ciphertext, &tag)
-                    .map_err(|e| TlsError::CryptoError(format!("Decryption failed: {:?}", e)))?;
+                c.open_in_place(nonce, aad, rest)
+                    .map_err(|e| TlsError::CryptoError(format!("Decryption failed: {:?}", e)))?
             }
-        }
+        };
 
         self.seq += 1;
-        Ok(ciphertext_len)
+        Ok(plaintext_slice.len())
     }
 }
 
